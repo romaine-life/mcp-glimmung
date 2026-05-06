@@ -19,10 +19,15 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
 
         Use to inspect a GitHub-backed Glimmung Issue before patching it,
         dispatching a run, reviewing locks, or finding its Glimmung-native id.
-        Returns title, body, state, labels, last_run_id, last_run_state,
+        Returns title, body, state, labels, last_run_number, last_run_state,
         issue_lock_held, plus the glimmung `id` and `project` (use those
         for patch_issue if you intend to mutate)."""
         return client.get(f"/v1/issues/{repo_owner}/{repo_name}/{issue_number}")
+
+    @mcp.tool()
+    def get_issue_by_number(project: str, issue_number: int) -> dict[str, Any]:
+        """Get a Glimmung issue by project and project-scoped issue number."""
+        return client.get(f"/v1/issues/by-number/{project}/{issue_number}")
 
     @mcp.tool()
     def get_issue_by_id(project: str, issue_id: str) -> dict[str, Any]:
@@ -41,9 +46,26 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         return client.get(f"/v1/issues/{repo_owner}/{repo_name}/{issue_number}/graph")
 
     @mcp.tool()
+    def get_issue_graph_by_number(project: str, issue_number: int) -> dict[str, Any]:
+        """Get the Glimmung lineage graph for one project-scoped issue."""
+        return client.get(f"/v1/issues/by-number/{project}/{issue_number}/graph")
+
+    @mcp.tool()
+    def get_run_report(project: str, issue_number: int, run_number: int) -> dict[str, Any]:
+        """Get one RunReport by issue-scoped run number.
+
+        Use this for normal operator work: "run 1 for glimmung#141" maps to
+        `project="glimmung", issue_number=141, run_number=1`.
+        """
+        return client.get(
+            f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/report",
+        )
+
+    @mcp.tool()
     def get_native_run_events(
         project: str,
-        run_id: str,
+        issue_number: int,
+        run_number: int,
         attempt_index: int | None = None,
         job_id: str | None = None,
         limit: int | None = 200,
@@ -62,7 +84,7 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
             "limit": limit,
         }
         return client.get(
-            f"/v1/runs/{project}/{run_id}/native/events",
+            f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/native/events",
             params={k: v for k, v in params.items() if v is not None},
         )
 
@@ -488,7 +510,8 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
     @mcp.tool()
     def replay_run_decision(
         project: str,
-        run_id: str,
+        issue_number: int,
+        run_number: int,
         synthetic_completion: dict[str, Any],
         override_workflow: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -531,14 +554,15 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         if override_workflow is not None:
             payload["override_workflow"] = override_workflow
         return client.post(
-            f"/v1/runs/{project}/{run_id}/replay",
+            f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/replay",
             json=payload,
         )
 
     @mcp.tool()
     def resume_run(
         project: str,
-        run_id: str,
+        issue_number: int,
+        run_number: int,
         entrypoint_phase: str,
         entrypoint_job_id: str | None = None,
         entrypoint_step_slug: str | None = None,
@@ -578,7 +602,7 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         replaces substituted phase input values for the resumed attempt.
 
         `trigger_source` is recorded on the new Run for observability;
-        the server adds `kind: resume_via_mcp` and `resumed_from_run_id`
+        the server adds `kind: resume_via_mcp` and `resumed_from_run_number`
         if not provided.
 
         Returns: `{state, new_run_id, prior_run_id, lease_id?, host?,
@@ -588,7 +612,11 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         `prior_missing`, `workflow_missing`. The HTTP layer maps the
         validation states to 4xx; happy paths return state in the body.
         """
-        ts: dict[str, Any] = {"kind": "resume_via_mcp", "resumed_from_run_id": run_id}
+        ts: dict[str, Any] = {
+            "kind": "resume_via_mcp",
+            "resumed_from_issue_number": issue_number,
+            "resumed_from_run_number": run_number,
+        }
         if trigger_source:
             ts.update(trigger_source)
         payload: dict[str, Any] = {
@@ -605,17 +633,18 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
             if v:
                 payload[k] = v
         return client.post(
-            f"/v1/runs/{project}/{run_id}/resume",
+            f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/resume",
             json=payload,
         )
 
     @mcp.tool()
     def abort_run(
         project: str,
-        run_id: str,
+        issue_number: int,
+        run_number: int,
         reason: str = "aborted_via_mcp",
     ) -> dict[str, Any]:
-        """Abort a Glimmung run and release issue locks or run locks.
+        """Abort a Glimmung run by issue-scoped run number.
 
         Use for orphaned, stuck, or intentionally cancelled runs. Flips a Run
         from in_progress to aborted and releases any locks it was holding.
@@ -626,6 +655,22 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         second time. If the Run has a workflow_run_id, a GH cancel is
         POSTed best-effort; `gh_run_cancelled` records the outcome
         (`None` if no GH dispatch was attempted)."""
+        return client.post(
+            f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/abort",
+            params={"reason": reason},
+        )
+
+    @mcp.tool()
+    def abort_run_by_id(
+        project: str,
+        run_id: str,
+        reason: str = "aborted_via_mcp",
+    ) -> dict[str, Any]:
+        """Abort a Glimmung run by internal ULID.
+
+        Prefer `abort_run(project, issue_number, run_number)` for normal
+        operator work. This is an escape hatch for storage-level recovery.
+        """
         return client.post(
             f"/v1/runs/{project}/{run_id}/abort",
             params={"reason": reason},

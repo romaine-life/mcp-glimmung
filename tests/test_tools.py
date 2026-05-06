@@ -91,6 +91,23 @@ def test_list_issues_plain_call_caps_results() -> None:
     assert client.calls[-1] == ("GET", "/v1/issues", {"limit": 50}, None)
 
 
+def test_project_scoped_issue_and_run_tools_call_human_id_surface() -> None:
+    tools, client = _registered_tools()
+
+    issue = tools["get_issue_by_number"](project="glimmung", issue_number=141)
+    graph = tools["get_issue_graph_by_number"](project="glimmung", issue_number=141)
+    report = tools["get_run_report"](project="glimmung", issue_number=141, run_number=1)
+    abort = tools["abort_run"](
+        project="glimmung", issue_number=141, run_number=1, reason="stuck",
+    )
+
+    assert issue["path"] == "/v1/issues/by-number/glimmung/141"
+    assert graph["path"] == "/v1/issues/by-number/glimmung/141/graph"
+    assert report["path"] == "/v1/projects/glimmung/issues/141/runs/1/report"
+    assert abort["path"] == "/v1/projects/glimmung/issues/141/runs/1/abort"
+    assert abort["params"] == {"reason": "stuck"}
+
+
 def test_list_reports_passes_filters_and_defaults_limit() -> None:
     tools, client = _registered_tools()
 
@@ -342,7 +359,8 @@ def test_resume_run_posts_native_step_boundary_payload() -> None:
 
     result = tools["resume_run"](
         project="glimmung",
-        run_id="run-1",
+        issue_number=141,
+        run_number=1,
         entrypoint_phase="agent-execute",
         entrypoint_job_id="agent",
         entrypoint_step_slug="run-agent",
@@ -352,7 +370,7 @@ def test_resume_run_posts_native_step_boundary_payload() -> None:
         trigger_source={"actor": "codex"},
     )
 
-    assert result["path"] == "/v1/runs/glimmung/run-1/resume"
+    assert result["path"] == "/v1/projects/glimmung/issues/141/runs/1/resume"
     assert result["json"] == {
         "entrypoint_phase": "agent-execute",
         "entrypoint_job_id": "agent",
@@ -362,7 +380,8 @@ def test_resume_run_posts_native_step_boundary_payload() -> None:
         "context": {"operator_note": "resume at agent step"},
         "trigger_source": {
             "kind": "resume_via_mcp",
-            "resumed_from_run_id": "run-1",
+            "resumed_from_issue_number": 141,
+            "resumed_from_run_number": 1,
             "actor": "codex",
         },
     }
@@ -373,16 +392,17 @@ def test_get_native_run_events_calls_hot_log_surface() -> None:
 
     result = tools["get_native_run_events"](
         project="ambience",
-        run_id="run-1",
+        issue_number=44,
+        run_number=1,
         attempt_index=2,
         job_id="agent",
         limit=25,
     )
 
-    assert result["path"] == "/v1/runs/ambience/run-1/native/events"
+    assert result["path"] == "/v1/projects/ambience/issues/44/runs/1/native/events"
     assert client.calls[-1] == (
         "GET",
-        "/v1/runs/ambience/run-1/native/events",
+        "/v1/projects/ambience/issues/44/runs/1/native/events",
         {"attempt_index": 2, "job_id": "agent", "limit": 25},
         None,
     )
