@@ -66,6 +66,31 @@ def test_create_issue_posts_native_issue_payload() -> None:
     assert client.calls[-1] == ("POST", "/v1/issues", None, result["json"])
 
 
+def test_archive_and_discard_issue_tools_post_audit_reason() -> None:
+    tools, client = _registered_tools()
+
+    archive = tools["archive_issue"](
+        project="glimmung",
+        issue_id="issue-1",
+        reason="done elsewhere",
+    )
+    discard = tools["discard_issue"](
+        project="glimmung",
+        issue_id="issue-2",
+    )
+
+    assert archive == {
+        "path": "/v1/issues/by-id/glimmung/issue-1/archive",
+        "params": None,
+        "json": {"reason": "done elsewhere"},
+    }
+    assert discard == {
+        "path": "/v1/issues/by-id/glimmung/issue-2/discard",
+        "params": None,
+        "json": {"reason": ""},
+    }
+
+
 def test_list_issues_passes_filters_and_defaults_limit() -> None:
     tools, client = _registered_tools()
 
