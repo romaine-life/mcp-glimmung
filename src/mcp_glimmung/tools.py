@@ -459,6 +459,37 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         return client.patch(f"/v1/issues/by-id/{project}/{issue_id}", json=payload)
 
     @mcp.tool()
+    def archive_issue(
+        project: str,
+        issue_id: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Archive a Glimmung issue.
+
+        Archives are implemented by closing the issue and adding an audit
+        comment. Closed issues are omitted from list_issues by default."""
+        return client.post(
+            f"/v1/issues/by-id/{project}/{issue_id}/archive",
+            json={"reason": reason},
+        )
+
+    @mcp.tool()
+    def discard_issue(
+        project: str,
+        issue_id: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Discard a Glimmung issue.
+
+        Discards are implemented by closing the issue and adding an audit
+        comment. Use for issues that should leave the active queue without
+        implying completed work."""
+        return client.post(
+            f"/v1/issues/by-id/{project}/{issue_id}/discard",
+            json={"reason": reason},
+        )
+
+    @mcp.tool()
     def create_issue(
         project: str,
         title: str,
