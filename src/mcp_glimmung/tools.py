@@ -92,6 +92,7 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
     def list_issues(
         project: str | None = None,
         repo: str | None = None,
+        state: str | None = "open",
         limit: int | None = 50,
     ) -> list[dict[str, Any]]:
         """List Glimmung issues across projects, optionally filtered.
@@ -99,11 +100,13 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         Use to discover issue ids, project names, GitHub-backed issues, and
         glimmung-native issues before dispatching or patching. `project`
         filters by Glimmung project name, `repo` filters GitHub-backed
-        issues by owner/name, and `limit` caps returned rows.
+        issues by owner/name, `state` is "open", "closed", or "all", and
+        `limit` caps returned rows.
         """
         params = {
             "project": project,
             "repo": repo,
+            "state": state,
             "limit": limit,
         }
         return client.get(

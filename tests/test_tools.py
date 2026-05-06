@@ -94,7 +94,12 @@ def test_archive_and_discard_issue_tools_post_audit_reason() -> None:
 def test_list_issues_passes_filters_and_defaults_limit() -> None:
     tools, client = _registered_tools()
 
-    tools["list_issues"](project="glimmung", repo="nelsong6/glimmung", limit=10)
+    tools["list_issues"](
+        project="glimmung",
+        repo="nelsong6/glimmung",
+        state="closed",
+        limit=10,
+    )
 
     assert client.calls[-1] == (
         "GET",
@@ -102,6 +107,7 @@ def test_list_issues_passes_filters_and_defaults_limit() -> None:
         {
             "project": "glimmung",
             "repo": "nelsong6/glimmung",
+            "state": "closed",
             "limit": 10,
         },
         None,
@@ -113,7 +119,7 @@ def test_list_issues_plain_call_caps_results() -> None:
 
     tools["list_issues"]()
 
-    assert client.calls[-1] == ("GET", "/v1/issues", {"limit": 50}, None)
+    assert client.calls[-1] == ("GET", "/v1/issues", {"state": "open", "limit": 50}, None)
 
 
 def test_project_scoped_issue_and_run_tools_call_human_id_surface() -> None:
