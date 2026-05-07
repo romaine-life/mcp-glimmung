@@ -18,5 +18,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install .
 
 ENV NODE_PATH=/app/node_modules
+ENV PLAYWRIGHT_PACKAGE_PATH=/app/node_modules/playwright/index.js
 
 ENTRYPOINT ["mcp-glimmung-http"]

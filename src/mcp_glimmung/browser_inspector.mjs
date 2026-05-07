@@ -1,11 +1,12 @@
 import { mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const playwrightModule =
-  process.env.PLAYWRIGHT_PACKAGE_PATH
-    ? pathToFileURL(process.env.PLAYWRIGHT_PACKAGE_PATH).href
-    : "playwright";
+const require = createRequire(import.meta.url);
+const playwrightModule = pathToFileURL(
+  process.env.PLAYWRIGHT_PACKAGE_PATH || require.resolve("playwright"),
+).href;
 const { chromium } = await import(playwrightModule);
 
 const input = JSON.parse(await new Promise((resolve, reject) => {
@@ -156,7 +157,10 @@ const pageErrors = [];
 const failedRequests = [];
 const httpErrors = [];
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  args: ["--no-sandbox", "--disable-dev-shm-usage"],
+});
 try {
   const context = await browser.newContext({
     viewport: input.viewport || { width: 1440, height: 900 },
