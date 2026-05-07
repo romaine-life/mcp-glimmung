@@ -34,9 +34,9 @@ function slug(value) {
     .slice(0, 80) || "inspection";
 }
 
-function interestingElements(maxElements) {
-  return () => {
-    const max = maxElements;
+function interestingElements() {
+  return (maxElements) => {
+    const max = maxElements ?? 80;
     const selectorParts = (el) => {
       if (el.id) return `#${CSS.escape(el.id)}`;
       const testId = el.getAttribute("data-testid") || el.getAttribute("data-test");
@@ -246,7 +246,7 @@ try {
     title: await page.title(),
     body_text: truncate(bodyText.replace(/\0/g, ""), input.bodyTextLimit ?? 4000),
     viewport: input.viewport || { width: 1440, height: 900 },
-    elements: await page.evaluate(interestingElements(input.maxElements ?? 80)),
+    elements: await page.evaluate(interestingElements(), input.maxElements ?? 80),
     console: consoleMessages,
     page_errors: pageErrors,
     failed_requests: failedRequests,
