@@ -15,14 +15,11 @@ from .glimmung_client import GlimmungClient
 def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
     @mcp.tool()
     def get_issue(repo_owner: str, repo_name: str, issue_number: int) -> dict[str, Any]:
-        """Get a Glimmung issue by GitHub repository owner/name and GitHub issue number.
+        """Deprecated: GitHub Issue lookup is disabled.
 
-        Use to inspect a GitHub-backed Glimmung Issue before patching it,
-        dispatching a run, reviewing locks, or finding its Glimmung-native id.
-        Returns title, body, state, labels, last_run_number, last_run_state,
-        issue_lock_held, plus the glimmung `id` and `project` (use those
-        for patch_issue if you intend to mutate)."""
-        return client.get(f"/v1/issues/{repo_owner}/{repo_name}/{issue_number}")
+        Use `get_issue_by_number(project, issue_number)` or
+        `get_issue_by_id(project, issue_id)` instead."""
+        raise RuntimeError("GitHub Issue lookup is disabled; use project-native issue lookup")
 
     @mcp.tool()
     def get_issue_by_number(project: str, issue_number: int) -> dict[str, Any]:
@@ -31,19 +28,15 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
 
     @mcp.tool()
     def get_issue_by_id(project: str, issue_id: str) -> dict[str, Any]:
-        """Get a Glimmung issue by project and Glimmung issue id.
-
-        Use this for glimmung-native issues that have no GitHub counterpart."""
+        """Get a Glimmung issue by project and Glimmung issue id."""
         return client.get(f"/v1/issues/by-id/{project}/{issue_id}")
 
     @mcp.tool()
     def get_issue_graph(repo_owner: str, repo_name: str, issue_number: int) -> dict[str, Any]:
-        """Get the Glimmung lineage graph for one issue, including runs, phases, reports, and signals.
+        """Deprecated: GitHub Issue graph lookup is disabled.
 
-        Lineage graph for one Issue: every Run dispatched against it,
-        every PhaseAttempt inside each Run, the Report(s) opened, and the
-        Signals fed back."""
-        return client.get(f"/v1/issues/{repo_owner}/{repo_name}/{issue_number}/graph")
+        Use `get_issue_graph_by_number(project, issue_number)` instead."""
+        raise RuntimeError("GitHub Issue graph lookup is disabled; use project-native issue lookup")
 
     @mcp.tool()
     def get_issue_graph_by_number(project: str, issue_number: int) -> dict[str, Any]:
@@ -91,21 +84,17 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
     @mcp.tool()
     def list_issues(
         project: str | None = None,
-        repo: str | None = None,
         state: str | None = "open",
         limit: int | None = 50,
     ) -> list[dict[str, Any]]:
         """List Glimmung issues across projects, optionally filtered.
 
-        Use to discover issue ids, project names, GitHub-backed issues, and
-        glimmung-native issues before dispatching or patching. `project`
-        filters by Glimmung project name, `repo` filters GitHub-backed
-        issues by owner/name, `state` is "open", "closed", or "all", and
-        `limit` caps returned rows.
+        Use to discover issue ids and project names before dispatching or
+        patching. `project` filters by Glimmung project name, `state` is
+        "open", "closed", or "all", and `limit` caps returned rows.
         """
         params = {
             "project": project,
-            "repo": repo,
             "state": state,
             "limit": limit,
         }
@@ -499,11 +488,10 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         body: str = "",
         labels: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Create a Glimmung-native issue without creating a GitHub issue.
+        """Create a Glimmung-native issue.
 
-        Mint a glimmung-native Issue. No GitHub issue is created; the
-        returned `id` is the canonical handle for detail, comments, and
-        dispatch APIs."""
+        The returned `id` is the canonical handle for detail, comments,
+        and dispatch APIs."""
         return client.post(
             "/v1/issues",
             json={
