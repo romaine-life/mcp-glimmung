@@ -255,6 +255,47 @@ def test_project_and_workflow_list_tools_pass_filters_and_default_limits() -> No
     ]
 
 
+def test_check_workflow_updates_calls_upstream_endpoint() -> None:
+    tools, client = _registered_tools()
+
+    tools["check_workflow_updates"](project="ambience", workflow="agent-run")
+
+    assert client.calls[-1] == (
+        "GET",
+        "/v1/projects/ambience/workflows/agent-run/upstream",
+        {"ref": "main"},
+        None,
+    )
+
+
+def test_check_workflow_updates_passes_ref_for_branch_preview() -> None:
+    tools, client = _registered_tools()
+
+    tools["check_workflow_updates"](
+        project="ambience", workflow="agent-run", ref="feature/x",
+    )
+
+    assert client.calls[-1] == (
+        "GET",
+        "/v1/projects/ambience/workflows/agent-run/upstream",
+        {"ref": "feature/x"},
+        None,
+    )
+
+
+def test_sync_workflow_posts_to_sync_endpoint() -> None:
+    tools, client = _registered_tools()
+
+    tools["sync_workflow"](project="ambience", workflow="agent-run")
+
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/projects/ambience/workflows/agent-run/sync",
+        {"ref": "main"},
+        None,
+    )
+
+
 def test_enqueue_signal_posts_drain_loop_payload() -> None:
     tools, client = _registered_tools()
 
