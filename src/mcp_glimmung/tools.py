@@ -424,6 +424,53 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         return client.patch(f"/v1/workflows/{project}/{name}", json=payload)
 
     @mcp.tool()
+    def check_workflow_updates(
+        project: str,
+        workflow: str,
+        ref: str = "main",
+    ) -> dict[str, Any]:
+        """Check whether a project repo's `.glimmung/workflows/<workflow>.yaml`
+        differs from what's currently registered for that workflow in
+        Glimmung. Read-only — does not change anything in Glimmung.
+
+        Returns a `WorkflowUpstreamResult` shape:
+          {
+            "project": ..., "workflow": ..., "ref": ..., "repo": ...,
+            "upstream": <WorkflowRegister payload from the file>,
+            "current":  <Workflow currently registered, or null>,
+            "in_sync":  bool — True only if both exist and match,
+          }
+
+        Use this before `sync_workflow` when you want to see what would
+        change. The `ref` parameter overrides the default branch (`main`)
+        — set it to inspect a feature branch's proposed workflow shape
+        before merging."""
+        return client.get(
+            f"/v1/projects/{project}/workflows/{workflow}/upstream",
+            params={"ref": ref},
+        )
+
+    @mcp.tool()
+    def sync_workflow(
+        project: str,
+        workflow: str,
+        ref: str = "main",
+    ) -> dict[str, Any]:
+        """Apply a project repo's `.glimmung/workflows/<workflow>.yaml` to
+        Glimmung — fetch upstream, validate, upsert when different.
+        Idempotent: calling on an already-in-sync workflow is a no-op
+        that still returns the comparison result.
+
+        Use this after pushing a workflow-shape change to main so the new
+        definition takes effect without anybody running register-workflow
+        scripts. The returned `WorkflowUpstreamResult.in_sync` will always
+        be True on success."""
+        return client.post(
+            f"/v1/projects/{project}/workflows/{workflow}/sync",
+            params={"ref": ref},
+        )
+
+    @mcp.tool()
     def patch_issue(
         project: str,
         issue_id: str,
