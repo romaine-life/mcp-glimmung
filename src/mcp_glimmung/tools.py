@@ -401,6 +401,119 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         return client.post("/v1/workflows", json=payload)
 
     @mcp.tool()
+    def scaffold_workflow(
+        project: str,
+        name: str,
+        runner_image: str | None = None,
+    ) -> dict[str, Any]:
+        """Emit a starter Glimmung workflow template matching the canonical
+        prepare → work → testing → cleanup shape.
+
+        Returns a payload ready to pass to `register_workflow` after
+        editing the per-phase scripts/jobs to match the project's
+        actual runner. The shape satisfies the mandatory-phase rule
+        the registration endpoint enforces (≥1 entry, ≥1 verify or
+        evidence-verification gate, ≥1 always teardown). See
+        `glimmung/docs/workflow-shape.md` for the rationale.
+
+        `runner_image` is interpolated into every k8s_job phase. Pass
+        the project's app-owned runner image; if omitted the template
+        uses a placeholder so the call still works as documentation.
+        """
+        image = runner_image or "REPLACE_ME:runner-image"
+        return {
+            "project": project,
+            "name": name,
+            "phases": [
+                {
+                    "name": "prepare",
+                    "kind": "k8s_job",
+                    "depends_on": [],
+                    "outputs": ["validation_url"],
+                    "jobs": [
+                        {
+                            "id": "prepare",
+                            "image": image,
+                            "command": ["/bin/bash", "/opt/scripts/prepare.sh"],
+                            "steps": [
+                                {"slug": "clone-repo", "title": "Clone repo"},
+                                {"slug": "deploy-validation-env",
+                                 "title": "Deploy validation env"},
+                                {"slug": "emit-outputs",
+                                 "title": "Emit phase outputs"},
+                            ],
+                            "timeout_seconds": 1800,
+                        },
+                    ],
+                },
+                {
+                    "name": "work",
+                    "kind": "k8s_job",
+                    "depends_on": ["prepare"],
+                    "inputs": {
+                        "validation_url":
+                            "${{ phases.prepare.outputs.validation_url }}",
+                    },
+                    "jobs": [
+                        {
+                            "id": "work",
+                            "image": image,
+                            "command": ["/bin/bash", "/opt/scripts/work.sh"],
+                            "steps": [
+                                {"slug": "implement", "title": "Implement"},
+                                {"slug": "push-branch", "title": "Push branch"},
+                            ],
+                            "timeout_seconds": 5400,
+                        },
+                    ],
+                },
+                {
+                    "name": "testing",
+                    "kind": "k8s_job",
+                    "depends_on": ["work"],
+                    "verify": True,
+                    "outputs": ["verification"],
+                    "inputs": {
+                        "validation_url":
+                            "${{ phases.prepare.outputs.validation_url }}",
+                    },
+                    "jobs": [
+                        {
+                            "id": "testing",
+                            "image": image,
+                            "command": ["/bin/bash", "/opt/scripts/testing.sh"],
+                            "steps": [
+                                {"slug": "run-tests", "title": "Run tests"},
+                                {"slug": "emit-verdict",
+                                 "title": "Emit verification verdict"},
+                            ],
+                            "timeout_seconds": 1800,
+                        },
+                    ],
+                },
+                {
+                    "name": "cleanup",
+                    "kind": "k8s_job",
+                    "always": True,
+                    "jobs": [
+                        {
+                            "id": "cleanup",
+                            "image": image,
+                            "command": ["/bin/bash", "/opt/scripts/cleanup.sh"],
+                            "steps": [
+                                {"slug": "teardown",
+                                 "title": "Tear down validation env"},
+                            ],
+                            "timeout_seconds": 600,
+                        },
+                    ],
+                },
+            ],
+            "pr": {"enabled": True},
+            "budget": {"total": 25.0},
+        }
+
+    @mcp.tool()
     def patch_workflow(
         project: str,
         name: str,
