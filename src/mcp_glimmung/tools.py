@@ -244,6 +244,40 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         return _sanitize_state_for_sessions(client.get("/v1/state"))
 
     @mcp.tool()
+    def list_leases(project: str | None = None) -> dict[str, Any]:
+        """Check lease availability: free hosts, active leases, and pending leases.
+
+        Returns three lists:
+        - `available_hosts`: registered hosts with no current lease (ready to accept work).
+        - `active_leases`: leases currently holding a host or native slot.
+        - `pending_leases`: leases queued but not yet assigned capacity.
+
+        Pass `project` to narrow all three lists to a single project.
+        Omit it to see the full cross-project picture."""
+        state = _sanitize_state_for_sessions(client.get("/v1/state"))
+
+        hosts = state.get("hosts") or []
+        active = state.get("active_leases") or []
+        pending = state.get("pending_leases") or []
+
+        if project is not None:
+            hosts = [
+                h for h in hosts
+                if isinstance(h.get("capabilities"), dict)
+                and h["capabilities"].get("project") == project
+            ]
+            active = [l for l in active if l.get("project") == project]
+            pending = [l for l in pending if l.get("project") == project]
+
+        available_hosts = [h for h in hosts if not h.get("current_lease")]
+
+        return {
+            "available_hosts": available_hosts,
+            "active_leases": active,
+            "pending_leases": pending,
+        }
+
+    @mcp.tool()
     def list_projects(
         name: str | None = None,
         github_repo: str | None = None,
