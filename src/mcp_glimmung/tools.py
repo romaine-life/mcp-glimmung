@@ -968,13 +968,13 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
     ) -> dict[str, Any]:
         """Reserve a Glimmung native app test slot.
 
-        Use this as a courtesy check-out when you need an ad-hoc app slot
-        but the actual provision/reset flow happens outside Glimmung. The
-        server records a native lease only; it does not create an Issue,
-        create a Run, or dispatch a workflow. `slot_index` selects a specific
-        `<project>-slot-N`; omit it to take the lowest available slot. `mode`
-        is `"provision"` for a normal checkout or `"clean_slate"` to record
-        that the caller intends to reset/re-apply the slot.
+        Use this when you need an ad-hoc app slot. The server records a
+        native lease and prepares the assigned test environment; it does not
+        create an Issue, create a Run, dispatch a workflow, or start a
+        Playwright worker. `slot_index` selects a specific `<project>-slot-N`;
+        omit it to take the lowest available slot. `mode` is `"provision"` for
+        a normal checkout or `"clean_slate"` to reset the slot namespace before
+        preparing it.
 
         Extra `phase_inputs` are stored on the lease alongside
         `validation_slot_index`, `test_slot_mode`, and `clean_slate`."""
