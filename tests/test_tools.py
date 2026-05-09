@@ -539,6 +539,29 @@ def test_checkout_test_slot_posts_checkout_payload() -> None:
     )
 
 
+def test_return_test_slot_posts_return_payload() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["return_test_slot"](
+        project="glimmung",
+        slot_index=2,
+        slot_name="glimmung-slot-2",
+    )
+
+    assert result["path"] == "/v1/test-slots/return"
+    assert result["json"] == {
+        "project": "glimmung",
+        "slot_index": 2,
+        "slot_name": "glimmung-slot-2",
+    }
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/test-slots/return",
+        None,
+        result["json"],
+    )
+
+
 def test_get_native_run_events_calls_hot_log_surface() -> None:
     tools, client = _registered_tools()
 

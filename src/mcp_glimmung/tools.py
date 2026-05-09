@@ -993,6 +993,29 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         return _hide_lease_id(client.post("/v1/test-slots/checkout", json=payload))
 
     @mcp.tool()
+    def return_test_slot(
+        project: str,
+        slot_index: int | None = None,
+        slot_name: str | None = None,
+        lease_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Return a checked-out Glimmung native app test slot.
+
+        Returning a test slot tells Glimmung the caller no longer needs the
+        leased environment. The server tears down the slot namespace for
+        active test-slot checkouts, then releases the reservation. Use
+        `slot_index` or `slot_name` for normal MCP use; `lease_id` is an
+        escape hatch for callers that received the raw API response."""
+        payload: dict[str, Any] = {"project": project}
+        if slot_index is not None:
+            payload["slot_index"] = slot_index
+        if slot_name is not None:
+            payload["slot_name"] = slot_name
+        if lease_id is not None:
+            payload["lease_id"] = lease_id
+        return _hide_lease_id(client.post("/v1/test-slots/return", json=payload))
+
+    @mcp.tool()
     def create_report(
         project: str,
         repo: str,
