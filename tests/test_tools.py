@@ -253,6 +253,59 @@ def test_project_and_workflow_list_tools_pass_filters_and_default_limits() -> No
     ]
 
 
+def test_get_state_hides_backing_lease_ids() -> None:
+    tools, client = _registered_tools()
+
+    def fake_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        client.calls.append(("GET", path, params, None))
+        return {
+            "hosts": [{
+                "name": "glimmung-slot-1",
+                "current_lease_id": "01BACKINGID",
+            }],
+            "pending_leases": [],
+            "active_leases": [{
+                "id": "01BACKINGID",
+                "lease_number": 3,
+                "project": "glimmung",
+                "metadata": {},
+            }],
+        }
+
+    client.get = fake_get  # type: ignore[method-assign]
+
+    state = tools["get_state"]()
+
+    assert state["hosts"][0]["current_lease"] == "#3"
+    assert "current_lease_id" not in state["hosts"][0]
+    assert state["active_leases"][0]["lease"] == "#3"
+    assert "id" not in state["active_leases"][0]
+
+
+def test_dispatch_run_hides_backing_lease_id() -> None:
+    tools, client = _registered_tools()
+
+    def fake_post(
+        path: str,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        client.calls.append(("POST", path, params, json))
+        return {
+            "state": "dispatched",
+            "run_number": 1,
+            "lease_id": "01BACKINGID",
+            "host": "native-k8s",
+        }
+
+    client.post = fake_post  # type: ignore[method-assign]
+
+    result = tools["dispatch_run"]("issue-1", project="glimmung")
+
+    assert result["lease"] == "claimed"
+    assert "lease_id" not in result
+
+
 def test_check_workflow_updates_calls_upstream_endpoint() -> None:
     tools, client = _registered_tools()
 

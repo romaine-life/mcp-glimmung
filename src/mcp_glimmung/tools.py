@@ -12,6 +12,76 @@ from .browser_inspector import inspect_url
 from .glimmung_client import GlimmungClient
 
 
+def _lease_label(lease: dict[str, Any]) -> str:
+    number = lease.get("lease_number")
+    if number is not None:
+        return f"#{number}"
+    metadata = lease.get("metadata") if isinstance(lease.get("metadata"), dict) else {}
+    slot_name = metadata.get("native_slot_name")
+    if isinstance(slot_name, str) and slot_name:
+        return slot_name
+    issue_number = metadata.get("issue_number") or metadata.get("issueNumber")
+    if issue_number:
+        return f"issue #{issue_number}"
+    return "lease"
+
+
+def _sanitize_state_for_sessions(state: dict[str, Any]) -> dict[str, Any]:
+    leases = [
+        lease
+        for lease in (
+            list(state.get("pending_leases") or [])
+            + list(state.get("active_leases") or [])
+        )
+        if isinstance(lease, dict)
+    ]
+    labels_by_id = {
+        lease["id"]: _lease_label(lease)
+        for lease in leases
+        if isinstance(lease.get("id"), str)
+    }
+
+    sanitized = dict(state)
+    for key in ("pending_leases", "active_leases"):
+        sanitized[key] = [
+            {
+                **{k: v for k, v in lease.items() if k != "id"},
+                "lease": _lease_label(lease),
+            }
+            for lease in (state.get(key) or [])
+            if isinstance(lease, dict)
+        ]
+    sanitized["hosts"] = [
+        {
+            **{k: v for k, v in host.items() if k != "current_lease_id"},
+            "current_lease": labels_by_id.get(host.get("current_lease_id"), "active lease")
+            if host.get("current_lease_id")
+            else None,
+        }
+        for host in (state.get("hosts") or [])
+        if isinstance(host, dict)
+    ]
+    return sanitized
+
+
+def _hide_lease_id(result: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(result)
+    if "lease_id" in sanitized:
+        sanitized.pop("lease_id", None)
+        sanitized.setdefault("lease", _result_lease_label(result))
+    return sanitized
+
+
+def _result_lease_label(result: dict[str, Any]) -> str:
+    number = result.get("lease_number")
+    if number is not None:
+        return f"#{number}"
+    slot_name = result.get("slot_name")
+    if isinstance(slot_name, str) and slot_name:
+        return slot_name
+    return "claimed"
+
+
 def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
     @mcp.tool()
     def get_issue(repo_owner: str, repo_name: str, issue_number: int) -> dict[str, Any]:
@@ -171,7 +241,7 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         Snapshot of hosts, leases, and recent runs. Same shape the
         /v1/events SSE feed pushes; this returns the latest snapshot
         point-in-time."""
-        return client.get("/v1/state")
+        return _sanitize_state_for_sessions(client.get("/v1/state"))
 
     @mcp.tool()
     def list_projects(
@@ -787,7 +857,7 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         the server adds `kind: resume_via_mcp` and `resumed_from_run_number`
         if not provided.
 
-        Returns: `{state, new_run_id, prior_run_id, lease_id?, host?,
+        Returns: `{state, new_run_id, prior_run_id, lease?, host?,
         issue_lock_holder_id, detail?}`. State values include
         `dispatched`, `pending`, `dispatch_failed`, `prior_in_progress`,
         `already_running`, `phase_invalid`, `outputs_missing`,
@@ -814,9 +884,11 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         }.items():
             if v:
                 payload[k] = v
-        return client.post(
-            f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/resume",
-            json=payload,
+        return _hide_lease_id(
+            client.post(
+                f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/resume",
+                json=payload,
+            )
         )
 
     @mcp.tool()
@@ -876,14 +948,14 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         the Issue doc when omitted. `workflow` is optional and only
         needed if the project has more than one workflow registered.
 
-        Returns the dispatch result: created Run id, claimed lease id,
+        Returns the dispatch result: created Run id, claimed lease label,
         host, and the GHA workflow_dispatch outcome."""
         payload: dict[str, Any] = {"issue_id": issue_id}
         if project is not None:
             payload["project"] = project
         if workflow is not None:
             payload["workflow"] = workflow
-        return client.post("/v1/runs/dispatch", json=payload)
+        return _hide_lease_id(client.post("/v1/runs/dispatch", json=payload))
 
     @mcp.tool()
     def checkout_test_slot(
@@ -918,7 +990,7 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
             payload["phase_inputs"] = phase_inputs
         if ttl_seconds is not None:
             payload["ttl_seconds"] = ttl_seconds
-        return client.post("/v1/test-slots/checkout", json=payload)
+        return _hide_lease_id(client.post("/v1/test-slots/checkout", json=payload))
 
     @mcp.tool()
     def create_report(
