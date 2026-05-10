@@ -886,8 +886,8 @@ def register_tools(
         the server adds `kind: resume_via_mcp` and `resumed_from_run_number`
         if not provided.
 
-        Returns: `{state, new_run_id, prior_run_id, lease?, host?,
-        issue_lock_holder_id, detail?}`. State values include
+        Returns: `{state, new_run_ref, prior_run_ref, lease?, host?,
+        detail?}`. State values include
         `dispatched`, `pending`, `dispatch_failed`, `prior_in_progress`,
         `already_running`, `phase_invalid`, `outputs_missing`,
         `prior_missing`, `workflow_missing`. The HTTP layer maps the
