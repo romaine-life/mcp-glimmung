@@ -113,19 +113,13 @@ def register_tools(
     def get_issue(repo_owner: str, repo_name: str, issue_number: int) -> dict[str, Any]:
         """Deprecated: GitHub Issue lookup is disabled.
 
-        Use `get_issue_by_number(project, issue_number)` or
-        `get_issue_by_id(project, issue_id)` instead."""
+        Use `get_issue_by_number(project, issue_number)` instead."""
         raise RuntimeError("GitHub Issue lookup is disabled; use project-native issue lookup")
 
     @mcp.tool()
     def get_issue_by_number(project: str, issue_number: int) -> dict[str, Any]:
         """Get a Glimmung issue by project and project-scoped issue number."""
         return client.get(f"/v1/issues/by-number/{project}/{issue_number}")
-
-    @mcp.tool()
-    def get_issue_by_id(project: str, issue_id: str) -> dict[str, Any]:
-        """Get a Glimmung issue by project and Glimmung issue id."""
-        return client.get(f"/v1/issues/by-id/{project}/{issue_id}")
 
     @mcp.tool()
     def get_issue_graph(repo_owner: str, repo_name: str, issue_number: int) -> dict[str, Any]:
@@ -716,13 +710,13 @@ def register_tools(
     @mcp.tool()
     def patch_issue(
         project: str,
-        issue_id: str,
+        issue_number: int,
         title: str | None = None,
         body: str | None = None,
         labels: list[str] | None = None,
         state: str | None = None,
     ) -> dict[str, Any]:
-        """Patch or update a Glimmung issue title, body, labels, or state.
+        """Patch or update a Glimmung issue by project-scoped issue number.
 
         All fields optional — None means \"don't change\".
         Pass an empty string to actually clear `body`, or an empty list to
@@ -738,12 +732,12 @@ def register_tools(
             payload["labels"] = labels
         if state is not None:
             payload["state"] = state
-        return client.patch(f"/v1/issues/by-id/{project}/{issue_id}", json=payload)
+        return client.patch(f"/v1/issues/by-number/{project}/{issue_number}", json=payload)
 
     @mcp.tool()
     def archive_issue(
         project: str,
-        issue_id: str,
+        issue_number: int,
         reason: str = "",
     ) -> dict[str, Any]:
         """Archive a Glimmung issue.
@@ -751,14 +745,14 @@ def register_tools(
         Archives are implemented by closing the issue and adding an audit
         comment. Closed issues are omitted from list_issues by default."""
         return client.post(
-            f"/v1/issues/by-id/{project}/{issue_id}/archive",
+            f"/v1/issues/by-number/{project}/{issue_number}/archive",
             json={"reason": reason},
         )
 
     @mcp.tool()
     def discard_issue(
         project: str,
-        issue_id: str,
+        issue_number: int,
         reason: str = "",
     ) -> dict[str, Any]:
         """Discard a Glimmung issue.
@@ -767,7 +761,7 @@ def register_tools(
         comment. Use for issues that should leave the active queue without
         implying completed work."""
         return client.post(
-            f"/v1/issues/by-id/{project}/{issue_id}/discard",
+            f"/v1/issues/by-number/{project}/{issue_number}/discard",
             json={"reason": reason},
         )
 

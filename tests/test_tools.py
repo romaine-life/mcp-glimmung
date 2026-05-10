@@ -105,21 +105,21 @@ def test_archive_and_discard_issue_tools_post_audit_reason() -> None:
 
     archive = tools["archive_issue"](
         project="glimmung",
-        issue_id="issue-1",
+        issue_number=1,
         reason="done elsewhere",
     )
     discard = tools["discard_issue"](
         project="glimmung",
-        issue_id="issue-2",
+        issue_number=2,
     )
 
     assert archive == {
-        "path": "/v1/issues/by-id/glimmung/issue-1/archive",
+        "path": "/v1/issues/by-number/glimmung/1/archive",
         "params": None,
         "json": {"reason": "done elsewhere"},
     }
     assert discard == {
-        "path": "/v1/issues/by-id/glimmung/issue-2/discard",
+        "path": "/v1/issues/by-number/glimmung/2/discard",
         "params": None,
         "json": {"reason": ""},
     }
