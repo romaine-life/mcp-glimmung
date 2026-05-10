@@ -994,9 +994,18 @@ def register_tools(
         `validation_slot_index`, `test_slot_mode`, and `clean_slate`.
         `tank_session_id` is required so Tank's UI can mark the requesting
         session with the leased environment number and URL."""
+        requester = {
+            "consumer": "tank-operator",
+            "kind": "tank_session",
+            "ref": f"tank-operator/session/{tank_session_id}",
+            "label": tank_session_id,
+            "metadata": {"tank_session_id": tank_session_id},
+        }
         payload: dict[str, Any] = {
             "project": project,
             "mode": mode,
+            "requester": requester,
+            "tank_session_id": tank_session_id,
         }
         if workflow is not None:
             payload["workflow"] = workflow
