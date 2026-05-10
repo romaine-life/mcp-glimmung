@@ -17,12 +17,30 @@ from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Mount, Route
 
+from .caller import CALLER_POD_IP, extract_source_pod_ip
 from .glimmung_client import GlimmungClient
+from .tank_client import TankClient
 from .tools import register_tools
+
+
+class CallerPodIPMiddleware(BaseHTTPMiddleware):
+    """Extract caller pod IP from X-Forwarded-For and bind to ContextVar."""
+
+    async def dispatch(self, request: Request, call_next):
+        forwarded_for = request.headers.get("x-forwarded-for")
+        peer_ip = request.client.host if request.client else None
+        pod_ip = extract_source_pod_ip(forwarded_for, peer_ip)
+        token = CALLER_POD_IP.set(pod_ip)
+        try:
+            return await call_next(request)
+        finally:
+            CALLER_POD_IP.reset(token)
 
 
 def build_app() -> Starlette:
@@ -41,7 +59,7 @@ def build_app() -> Starlette:
         ),
     )
     base_url = os.environ.get("GLIMMUNG_BASE_URL", "http://glimmung.glimmung.svc")
-    register_tools(mcp, GlimmungClient(base_url=base_url))
+    register_tools(mcp, GlimmungClient(base_url=base_url), TankClient())
 
     async def healthz(_: Request) -> Response:
         return Response("ok", media_type="text/plain")
@@ -66,6 +84,9 @@ def build_app() -> Starlette:
             Route("/healthz", healthz),
             Route("/", delete_session, methods=["DELETE"]),
             Mount("/", app=mcp.streamable_http_app()),
+        ],
+        middleware=[
+            Middleware(CallerPodIPMiddleware),
         ],
         lifespan=lifespan,
     )

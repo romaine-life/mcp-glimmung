@@ -41,6 +41,43 @@ class StubClient:
         return {"path": path, "params": params, "json": json}
 
 
+class StubTankClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def set_test_environment(
+        self,
+        caller_pod_ip: str,
+        session_id: str,
+        *,
+        active: bool = True,
+        slot_index: int | None = None,
+        url: str | None = None,
+        lease_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "caller_pod_ip": caller_pod_ip,
+                "session_id": session_id,
+                "active": active,
+                "slot_index": slot_index,
+                "url": url,
+                "lease_id": lease_id,
+            }
+        )
+        return {
+            "url": f"https://tank.example.test/?session={session_id}",
+            "test_state": {
+                "active": active,
+                "slot_index": slot_index,
+                "url": url,
+                "lease_id": lease_id,
+            }
+            if active
+            else None,
+        }
+
+
 def _registered_tools() -> tuple[dict[str, Any], StubClient]:
     mcp = FakeMCP()
     client = StubClient()
@@ -515,6 +552,7 @@ def test_checkout_test_slot_posts_checkout_payload() -> None:
 
     result = tools["checkout_test_slot"](
         project="glimmung",
+        tank_session_id="abc123",
         workflow="native-agent",
         slot_index=2,
         mode="clean_slate",
@@ -539,6 +577,56 @@ def test_checkout_test_slot_posts_checkout_payload() -> None:
     )
 
 
+def test_checkout_test_slot_updates_tank_session_on_active_slot() -> None:
+    mcp = FakeMCP()
+    tank = StubTankClient()
+
+    class CheckoutClient(StubClient):
+        def post(
+            self,
+            path: str,
+            params: dict[str, Any] | None = None,
+            json: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            self.calls.append(("POST", path, params, json))
+            return {
+                "state": "active",
+                "project": "tank-operator",
+                "workflow": "test-slot-checkout",
+                "slot_index": 2,
+                "slot_name": "tank-slot-2",
+                "lease_id": "lease-123",
+            }
+
+    client = CheckoutClient()
+    register_tools(mcp, client, tank)  # type: ignore[arg-type]
+    from mcp_glimmung.caller import CALLER_POD_IP
+
+    token = CALLER_POD_IP.set("10.0.0.42")
+    try:
+        result = mcp.tools["checkout_test_slot"](
+            project="tank-operator",
+            tank_session_id="abc123",
+            slot_index=2,
+        )
+    finally:
+        CALLER_POD_IP.reset(token)
+
+    assert tank.calls == [
+        {
+            "caller_pod_ip": "10.0.0.42",
+            "session_id": "abc123",
+            "active": True,
+            "slot_index": 2,
+            "url": "https://tank-slot-2.tank.dev.romaine.life",
+            "lease_id": "lease-123",
+        }
+    ]
+    assert result["lease"] == "tank-slot-2"
+    assert result["tank_test_state"]["slot_index"] == 2
+    assert result["tank_session_url"] == "https://tank.example.test/?session=abc123"
+
+
 def test_return_test_slot_posts_return_payload() -> None:
     tools, client = _registered_tools()
 
@@ -560,6 +648,35 @@ def test_return_test_slot_posts_return_payload() -> None:
         None,
         result["json"],
     )
+
+
+def test_return_test_slot_clears_tank_session_when_requested() -> None:
+    mcp = FakeMCP()
+    tank = StubTankClient()
+    register_tools(mcp, StubClient(), tank)  # type: ignore[arg-type]
+    from mcp_glimmung.caller import CALLER_POD_IP
+
+    token = CALLER_POD_IP.set("10.0.0.42")
+    try:
+        result = mcp.tools["return_test_slot"](
+            project="tank-operator",
+            slot_index=2,
+            tank_session_id="abc123",
+        )
+    finally:
+        CALLER_POD_IP.reset(token)
+
+    assert tank.calls == [
+        {
+            "caller_pod_ip": "10.0.0.42",
+            "session_id": "abc123",
+            "active": False,
+            "slot_index": None,
+            "url": None,
+            "lease_id": None,
+        }
+    ]
+    assert result["tank_test_state"] is None
 
 
 def test_get_native_run_events_calls_hot_log_surface() -> None:

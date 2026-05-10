@@ -4,12 +4,36 @@ Read surface plus session-safe mutations. Lease and webhook endpoints stay
 unexposed — those are runner / orchestrator concerns, not session concerns.
 """
 
+import os
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from .browser_inspector import inspect_url
+from .caller import current_caller_pod_ip
 from .glimmung_client import GlimmungClient
+from .tank_client import TankClient
+
+_CALLER_MISSING_MSG = (
+    "could not identify caller from pod IP - make sure you're calling from "
+    "inside a tank-operator session pod"
+)
+_TEST_SLOT_RECORD_BASE = os.environ.get(
+    "TEST_SLOT_RECORD_BASE", "tank.dev.romaine.life"
+).strip()
+
+
+def _pod_ip() -> str:
+    ip = current_caller_pod_ip()
+    if not ip:
+        raise ValueError(_CALLER_MISSING_MSG)
+    return ip
+
+
+def _test_slot_url(slot_name: str | None) -> str | None:
+    if not slot_name or not _TEST_SLOT_RECORD_BASE:
+        return None
+    return f"https://{slot_name}.{_TEST_SLOT_RECORD_BASE}"
 
 
 def _lease_label(lease: dict[str, Any]) -> str:
@@ -82,7 +106,9 @@ def _result_lease_label(result: dict[str, Any]) -> str:
     return "claimed"
 
 
-def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
+def register_tools(
+    mcp: FastMCP, client: GlimmungClient, tank_client: TankClient | None = None
+) -> None:
     @mcp.tool()
     def get_issue(repo_owner: str, repo_name: str, issue_number: int) -> dict[str, Any]:
         """Deprecated: GitHub Issue lookup is disabled.
@@ -994,6 +1020,7 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
     @mcp.tool()
     def checkout_test_slot(
         project: str,
+        tank_session_id: str,
         workflow: str | None = None,
         slot_index: int | None = None,
         mode: str = "provision",
@@ -1011,7 +1038,9 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         slot namespace before preparing it.
 
         Extra `phase_inputs` are stored on the lease alongside
-        `validation_slot_index`, `test_slot_mode`, and `clean_slate`."""
+        `validation_slot_index`, `test_slot_mode`, and `clean_slate`.
+        `tank_session_id` is required so Tank's UI can mark the requesting
+        session with the leased environment number and URL."""
         payload: dict[str, Any] = {
             "project": project,
             "mode": mode,
@@ -1024,7 +1053,26 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
             payload["phase_inputs"] = phase_inputs
         if ttl_seconds is not None:
             payload["ttl_seconds"] = ttl_seconds
-        return _hide_lease_id(client.post("/v1/test-slots/checkout", json=payload))
+        result = client.post("/v1/test-slots/checkout", json=payload)
+        tank_state = None
+        if (
+            tank_client is not None
+            and result.get("state") == "active"
+            and result.get("slot_index") is not None
+        ):
+            tank_state = tank_client.set_test_environment(
+                _pod_ip(),
+                session_id=tank_session_id,
+                active=True,
+                slot_index=result.get("slot_index"),
+                url=_test_slot_url(result.get("slot_name")),
+                lease_id=result.get("lease_id"),
+            )
+        sanitized = _hide_lease_id(result)
+        if tank_state is not None:
+            sanitized["tank_test_state"] = tank_state.get("test_state")
+            sanitized["tank_session_url"] = tank_state.get("url")
+        return sanitized
 
     @mcp.tool()
     def return_test_slot(
@@ -1032,6 +1080,7 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         slot_index: int | None = None,
         slot_name: str | None = None,
         lease_id: str | None = None,
+        tank_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Return a checked-out Glimmung native app test slot.
 
@@ -1039,7 +1088,8 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         leased environment. The server tears down the slot namespace for
         active test-slot checkouts, then releases the reservation. Use
         `slot_index` or `slot_name` for normal MCP use; `lease_id` is an
-        escape hatch for callers that received the raw API response."""
+        escape hatch for callers that received the raw API response. Pass
+        `tank_session_id` to clear Tank's GUI test pill for the session."""
         payload: dict[str, Any] = {"project": project}
         if slot_index is not None:
             payload["slot_index"] = slot_index
@@ -1047,7 +1097,19 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
             payload["slot_name"] = slot_name
         if lease_id is not None:
             payload["lease_id"] = lease_id
-        return _hide_lease_id(client.post("/v1/test-slots/return", json=payload))
+        result = client.post("/v1/test-slots/return", json=payload)
+        tank_state = None
+        if tank_client is not None and tank_session_id is not None:
+            tank_state = tank_client.set_test_environment(
+                _pod_ip(),
+                session_id=tank_session_id,
+                active=False,
+            )
+        sanitized = _hide_lease_id(result)
+        if tank_state is not None:
+            sanitized["tank_test_state"] = tank_state.get("test_state")
+            sanitized["tank_session_url"] = tank_state.get("url")
+        return sanitized
 
     @mcp.tool()
     def create_report(
