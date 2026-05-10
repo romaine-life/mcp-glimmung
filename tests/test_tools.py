@@ -367,7 +367,7 @@ def test_enqueue_signal_posts_drain_loop_payload() -> None:
     result = tools["enqueue_signal"](
         target_type="pr",
         target_repo="nelsong6/glimmung",
-        target_id="123",
+        target_ref="nelsong6/glimmung#123",
         payload={"kind": "reject", "feedback": "tighten tests"},
     )
 
@@ -375,7 +375,7 @@ def test_enqueue_signal_posts_drain_loop_payload() -> None:
     assert result["json"] == {
         "target_type": "pr",
         "target_repo": "nelsong6/glimmung",
-        "target_id": "123",
+        "target_ref": "nelsong6/glimmung#123",
         "source": "glimmung_ui",
         "payload": {"kind": "reject", "feedback": "tighten tests"},
     }

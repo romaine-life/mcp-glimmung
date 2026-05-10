@@ -260,8 +260,8 @@ def register_tools(
                 if isinstance(h.get("capabilities"), dict)
                 and h["capabilities"].get("project") == project
             ]
-            active = [l for l in active if l.get("project") == project]
-            pending = [l for l in pending if l.get("project") == project]
+            active = [lease for lease in active if lease.get("project") == project]
+            pending = [lease for lease in pending if lease.get("project") == project]
 
         available_hosts = [h for h in hosts if not h.get("current_lease")]
 
@@ -401,20 +401,20 @@ def register_tools(
         return client.get("/v1/playbooks", params=params)
 
     @mcp.tool()
-    def get_playbook(project: str, playbook_id: str) -> dict[str, Any]:
-        """Get one Glimmung Playbook by project and playbook id."""
-        return client.get(f"/v1/playbooks/{project}/{playbook_id}")
+    def get_playbook(project: str, playbook_ref: str) -> dict[str, Any]:
+        """Get one Glimmung Playbook by project and public playbook ref."""
+        return client.get(f"/v1/playbooks/{project}/{playbook_ref}")
 
     @mcp.tool()
-    def run_playbook(project: str, playbook_id: str) -> dict[str, Any]:
+    def run_playbook(project: str, playbook_ref: str) -> dict[str, Any]:
         """Start or advance a Glimmung Playbook.
 
         The server mints and dispatches ready entries up to the playbook's
         concurrency limit, refreshes linked run outcomes, and records created
-        issue/run ids. Re-run this after entries complete to advance
+        issue/run refs. Re-run this after entries complete to advance
         dependency-gated work.
         """
-        return client.post(f"/v1/playbooks/{project}/{playbook_id}/run")
+        return client.post(f"/v1/playbooks/{project}/{playbook_ref}/run")
 
     @mcp.tool()
     def inspect_browser_url(
@@ -748,7 +748,7 @@ def register_tools(
     ) -> dict[str, Any]:
         """Create a Glimmung-native issue.
 
-        The returned `id` is the canonical handle for detail, comments,
+        The returned `ref` is the canonical handle for detail, comments,
         and dispatch APIs."""
         return client.post(
             "/v1/issues",
@@ -764,7 +764,7 @@ def register_tools(
     def enqueue_signal(
         target_type: str,
         target_repo: str,
-        target_id: str,
+        target_ref: str,
         source: str = "glimmung_ui",
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -773,15 +773,16 @@ def register_tools(
         Use to feed actionable feedback or trigger details into the drain loop.
         Common values:
         `target_type` is `pr`, `issue`, or `run`; `target_repo` is the
-        repository slug / partition key; `target_id` is a PR number,
-        issue number, or run id. Put the actionable feedback or trigger
-        detail in `payload`."""
+        repository slug / partition key; `target_ref` is the public PR,
+        issue, or run handle, such as `owner/repo#42`, `project#17`, or
+        `project#17/runs/2`. Put the actionable feedback or trigger detail
+        in `payload`."""
         return client.post(
             "/v1/signals",
             json={
                 "target_type": target_type,
                 "target_repo": target_repo,
-                "target_id": target_id,
+                "target_ref": target_ref,
                 "source": source,
                 "payload": payload or {},
             },
