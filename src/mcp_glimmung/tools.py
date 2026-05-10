@@ -7,6 +7,7 @@ unexposed — those are runner / orchestrator concerns, not session concerns.
 import os
 from typing import Any
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .browser_inspector import inspect_url
@@ -18,10 +19,6 @@ _CALLER_MISSING_MSG = (
     "could not identify caller from pod IP - make sure you're calling from "
     "inside a tank-operator session pod"
 )
-_TEST_SLOT_RECORD_BASE = os.environ.get(
-    "TEST_SLOT_RECORD_BASE", "tank.dev.romaine.life"
-).strip()
-
 
 def _pod_ip() -> str:
     ip = current_caller_pod_ip()
@@ -30,10 +27,9 @@ def _pod_ip() -> str:
     return ip
 
 
-def _test_slot_url(slot_name: str | None) -> str | None:
-    if not slot_name or not _TEST_SLOT_RECORD_BASE:
-        return None
-    return f"https://{slot_name}.{_TEST_SLOT_RECORD_BASE}"
+def _tank_session_id(value: str) -> str:
+    """Normalize either a Tank session id or its Kubernetes pod name."""
+    return value.removeprefix("session-")
 
 
 def _lease_label(lease: dict[str, Any]) -> str:
@@ -994,18 +990,19 @@ def register_tools(
         `validation_slot_index`, `test_slot_mode`, and `clean_slate`.
         `tank_session_id` is required so Tank's UI can mark the requesting
         session with the leased environment number and URL."""
+        normalized_tank_session_id = _tank_session_id(tank_session_id)
         requester = {
             "consumer": "tank-operator",
             "kind": "tank_session",
-            "ref": f"tank-operator/session/{tank_session_id}",
-            "label": tank_session_id,
-            "metadata": {"tank_session_id": tank_session_id},
+            "ref": f"tank-operator/session/{normalized_tank_session_id}",
+            "label": normalized_tank_session_id,
+            "metadata": {"tank_session_id": normalized_tank_session_id},
         }
         payload: dict[str, Any] = {
             "project": project,
             "mode": mode,
             "requester": requester,
-            "tank_session_id": tank_session_id,
+            "tank_session_id": normalized_tank_session_id,
         }
         if workflow is not None:
             payload["workflow"] = workflow
@@ -1022,17 +1019,27 @@ def register_tools(
             and result.get("state") == "active"
             and result.get("slot_index") is not None
         ):
-            tank_state = tank_client.set_test_environment(
-                _pod_ip(),
-                session_id=tank_session_id,
-                active=True,
-                slot_index=result.get("slot_index"),
-                url=_test_slot_url(result.get("slot_name")),
-            )
+            slot_url = result.get("url")
+            if not isinstance(slot_url, str) or not slot_url:
+                tank_state = {"error": "checkout response did not include a test slot url"}
+            else:
+                try:
+                    tank_state = tank_client.set_test_environment(
+                        _pod_ip(),
+                        session_id=normalized_tank_session_id,
+                        active=True,
+                        slot_index=result.get("slot_index"),
+                        url=slot_url,
+                    )
+                except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+                    tank_state = {"error": str(exc)}
         sanitized = _hide_lease_id(result)
         if tank_state is not None:
-            sanitized["tank_test_state"] = tank_state.get("test_state")
-            sanitized["tank_session_url"] = tank_state.get("url")
+            if "error" in tank_state:
+                sanitized["tank_test_state_error"] = tank_state["error"]
+            else:
+                sanitized["tank_test_state"] = tank_state.get("test_state")
+                sanitized["tank_session_url"] = tank_state.get("url")
         return sanitized
 
     @mcp.tool()
@@ -1057,15 +1064,21 @@ def register_tools(
         result = client.post("/v1/test-slots/return", json=payload)
         tank_state = None
         if tank_client is not None and tank_session_id is not None:
-            tank_state = tank_client.set_test_environment(
-                _pod_ip(),
-                session_id=tank_session_id,
-                active=False,
-            )
+            try:
+                tank_state = tank_client.set_test_environment(
+                    _pod_ip(),
+                    session_id=_tank_session_id(tank_session_id),
+                    active=False,
+                )
+            except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+                tank_state = {"error": str(exc)}
         sanitized = _hide_lease_id(result)
         if tank_state is not None:
-            sanitized["tank_test_state"] = tank_state.get("test_state")
-            sanitized["tank_session_url"] = tank_state.get("url")
+            if "error" in tank_state:
+                sanitized["tank_test_state_error"] = tank_state["error"]
+            else:
+                sanitized["tank_test_state"] = tank_state.get("test_state")
+                sanitized["tank_session_url"] = tank_state.get("url")
         return sanitized
 
     @mcp.tool()
