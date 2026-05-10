@@ -541,6 +541,14 @@ def test_checkout_test_slot_posts_checkout_payload() -> None:
     assert result["json"] == {
         "project": "glimmung",
         "mode": "clean_slate",
+        "requester": {
+            "consumer": "tank-operator",
+            "kind": "tank_session",
+            "ref": "tank-operator/session/abc123",
+            "label": "abc123",
+            "metadata": {"tank_session_id": "abc123"},
+        },
+        "tank_session_id": "abc123",
         "workflow": "native-agent",
         "slot_index": 2,
         "phase_inputs": {"image_tag": "sha-123"},
