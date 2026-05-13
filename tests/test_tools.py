@@ -36,10 +36,6 @@ class StubClient:
         self.calls.append(("PATCH", path, None, json))
         return {"path": path, "json": json}
 
-    def delete(self, path: str) -> dict[str, Any]:
-        self.calls.append(("DELETE", path, None, None))
-        return {"path": path, "status": "deleted"}
-
     def post(
         self,
         path: str,
@@ -447,7 +443,7 @@ def test_enqueue_signal_posts_drain_loop_payload() -> None:
     assert client.calls[-1] == ("POST", "/v1/signals", None, result["json"])
 
 
-def test_register_project_host_and_delete_host_admin_payloads() -> None:
+def test_register_project_posts_admin_payload() -> None:
     tools, client = _registered_tools()
 
     project = tools["register_project"](
@@ -455,28 +451,16 @@ def test_register_project_host_and_delete_host_admin_payloads() -> None:
         "nelsong6/glimmung",
         metadata={"tier": "control-plane"},
     )
-    host = tools["register_host"](
-        "runner-1",
-        capabilities={"gpu": False},
-        drained=True,
-    )
-    deleted = tools["delete_host"]("runner 1")
 
     assert project["json"] == {
         "name": "glimmung",
         "github_repo": "nelsong6/glimmung",
         "metadata": {"tier": "control-plane"},
     }
-    assert host["json"] == {
-        "name": "runner-1",
-        "capabilities": {"gpu": False},
-        "drained": True,
-    }
-    assert deleted == {"path": "/v1/hosts/runner%201", "status": "deleted"}
-    assert client.calls[-3:] == [
+    assert "register_host" not in tools
+    assert "delete_host" not in tools
+    assert client.calls[-1:] == [
         ("POST", "/v1/projects", None, project["json"]),
-        ("POST", "/v1/hosts", None, host["json"]),
-        ("DELETE", "/v1/hosts/runner%201", None, None),
     ]
 
 

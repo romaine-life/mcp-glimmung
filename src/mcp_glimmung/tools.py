@@ -6,7 +6,6 @@ unexposed — those are runner / orchestrator concerns, not session concerns.
 
 import os
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -392,37 +391,6 @@ def register_tools(
         if slot_index is not None:
             payload["slot_index"] = slot_index
         return client.post("/v1/test-slots/hot-swap-history", json=payload)
-
-    @mcp.tool()
-    def register_host(
-        name: str,
-        capabilities: dict[str, Any] | None = None,
-        drained: bool = False,
-    ) -> dict[str, Any]:
-        """Create or update a Glimmung runner host and its dispatch capabilities.
-
-        Admin/bootstrap tool: use it
-        to advertise a worker slot and its dispatch `capabilities`.
-        `drained=True` keeps the host registered but ineligible for new
-        leases."""
-        return client.post(
-            "/v1/hosts",
-            json={
-                "name": name,
-                "capabilities": capabilities or {},
-                "drained": drained,
-            },
-        )
-
-    @mcp.tool()
-    def delete_host(name: str) -> dict[str, Any]:
-        """Delete a registered Glimmung host inventory row.
-
-        This only removes the legacy host registration record. It does not
-        delete Kubernetes namespaces, DNS records, certificates, or native
-        test-slot warm state.
-        """
-        return client.delete(f"/v1/hosts/{quote(name, safe='')}")
 
     @mcp.tool()
     def list_workflows(
