@@ -519,17 +519,19 @@ def register_tools(
         phases: list[dict[str, Any]],
         pr: dict[str, Any] | None = None,
         budget: dict[str, Any] | None = None,
-        trigger_label: str = "issue-agent",
+        trigger_label: str | None = None,
         default_requirements: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create or replace a Glimmung workflow registration, including phases, PR policy, budget, and triggers.
 
         Upsert a Workflow (create or replace). Use this for the
         structural fields `patch_workflow` won't touch: phase shape,
-        declared inputs/outputs, recycle policy, trigger label, default
-        requirements. Idempotent — re-registering the same shape is a
-        no-op replace, so consumer-migration scripts can run repeatedly
-        without piling up state. The server preserves `createdAt` on
+        declared inputs/outputs, recycle policy, and default requirements.
+        Trigger labels are legacy metadata; omit unless you are preserving an
+        older workflow record for display/filtering.
+        Idempotent — re-registering the same shape is a no-op replace, so
+        consumer-migration scripts can run repeatedly without piling up state.
+        The server preserves `createdAt` on
         replace and validates cross-phase input refs at registration
         time, so a typo in `${{ phases.NAME.outputs.KEY }}` surfaces
         before it can corrupt a run.
@@ -547,8 +549,9 @@ def register_tools(
             "project": project,
             "name": name,
             "phases": phases,
-            "trigger_label": trigger_label,
         }
+        if trigger_label is not None:
+            payload["trigger_label"] = trigger_label
         if pr is not None:
             payload["pr"] = pr
         if budget is not None:
