@@ -309,6 +309,73 @@ def register_tools(
         )
 
     @mcp.tool()
+    def get_test_slot_hot_swap_contract(project: str) -> dict[str, Any]:
+        """Read a project's native test-slot hot-swap contract.
+
+        Use before fast validation updates. The returned contract describes
+        static copy source/target paths and backend build/artifact/restart
+        behavior. If the project has no `metadata.test_slot_hot_swap`, the
+        response has `enabled: false` and a diagnostic detail."""
+        rows = client.get("/v1/projects", params={"name": project, "limit": 10})
+        for row in rows:
+            if row.get("name") != project and row.get("id") != project:
+                continue
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            contract = metadata.get("test_slot_hot_swap") or metadata.get("testSlotHotSwap")
+            if isinstance(contract, dict):
+                return {
+                    "project": row.get("name") or project,
+                    "enabled": bool(contract.get("enabled")),
+                    "contract": contract,
+                }
+            return {
+                "project": row.get("name") or project,
+                "enabled": False,
+                "detail": "project has no test_slot_hot_swap metadata",
+            }
+        return {
+            "project": project,
+            "enabled": False,
+            "detail": "project not found",
+        }
+
+    @mcp.tool()
+    def record_test_slot_hot_swap(
+        project: str,
+        status: str,
+        operation: str = "hot_swap",
+        lease_ref: str | None = None,
+        slot_name: str | None = None,
+        slot_index: int | None = None,
+        summary: str = "",
+        diagnostics: dict[str, Any] | None = None,
+        timings: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Append hot-swap diagnostics to an active test-slot lease.
+
+        Use after a static or backend hot swap so later operators can inspect
+        recent build/copy/restart/health details from the lease metadata. Pass
+        `lease_ref`, or identify the active checkout with `slot_name` or
+        `slot_index`."""
+        payload: dict[str, Any] = {
+            "project": project,
+            "entry": {
+                "operation": operation,
+                "status": status,
+                "summary": summary,
+                "diagnostics": diagnostics or {},
+                "timings": timings or {},
+            },
+        }
+        if lease_ref:
+            payload["lease_ref"] = lease_ref
+        if slot_name:
+            payload["slot_name"] = slot_name
+        if slot_index is not None:
+            payload["slot_index"] = slot_index
+        return client.post("/v1/test-slots/hot-swap-history", json=payload)
+
+    @mcp.tool()
     def register_host(
         name: str,
         capabilities: dict[str, Any] | None = None,
