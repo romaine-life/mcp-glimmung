@@ -1,3 +1,4 @@
+import inspect
 import sys
 from pathlib import Path
 from typing import Any
@@ -638,16 +639,12 @@ def test_checkout_test_slot_posts_checkout_payload() -> None:
         project="glimmung",
         tank_session_id="abc123",
         workflow="native-agent",
-        slot_index=2,
-        mode="clean_slate",
-        phase_inputs={"image_tag": "sha-123"},
         ttl_seconds=3600,
     )
 
     assert result["path"] == "/v1/test-slots/checkout"
     assert result["json"] == {
         "project": "glimmung",
-        "mode": "clean_slate",
         "requester": {
             "consumer": "tank-operator",
             "kind": "tank_session",
@@ -657,8 +654,6 @@ def test_checkout_test_slot_posts_checkout_payload() -> None:
         },
         "tank_session_id": "abc123",
         "workflow": "native-agent",
-        "slot_index": 2,
-        "phase_inputs": {"image_tag": "sha-123"},
         "ttl_seconds": 3600,
     }
     assert client.calls[-1] == (
@@ -669,7 +664,17 @@ def test_checkout_test_slot_posts_checkout_payload() -> None:
     )
 
 
-def test_checkout_test_slot_updates_tank_session_on_claimed_slot() -> None:
+def test_checkout_test_slot_does_not_expose_legacy_selection_knobs() -> None:
+    tools, _client = _registered_tools()
+
+    signature = inspect.signature(tools["checkout_test_slot"])
+
+    assert "slot_index" not in signature.parameters
+    assert "mode" not in signature.parameters
+    assert "phase_inputs" not in signature.parameters
+
+
+def test_checkout_test_slot_updates_tank_session_on_assigned_slot() -> None:
     mcp = FakeMCP()
     tank = StubTankClient()
 
@@ -682,7 +687,7 @@ def test_checkout_test_slot_updates_tank_session_on_claimed_slot() -> None:
         ) -> dict[str, Any]:
             self.calls.append(("POST", path, params, json))
             return {
-                "state": "claimed",
+                "state": "activating",
                 "project": "tank-operator",
                 "workflow": "test-slot-checkout",
                 "slot_index": 2,
@@ -700,7 +705,6 @@ def test_checkout_test_slot_updates_tank_session_on_claimed_slot() -> None:
         result = mcp.tools["checkout_test_slot"](
             project="tank-operator",
             tank_session_id="abc123",
-            slot_index=2,
         )
     finally:
         CALLER_POD_IP.reset(token)

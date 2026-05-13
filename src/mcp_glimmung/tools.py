@@ -1034,23 +1034,22 @@ def register_tools(
         project: str,
         tank_session_id: str,
         workflow: str | None = None,
-        slot_index: int | None = None,
-        mode: str = "provision",
-        phase_inputs: dict[str, str] | None = None,
         ttl_seconds: int | None = None,
     ) -> dict[str, Any]:
         """Reserve a Glimmung native app test slot.
 
-        Use this when you need an ad-hoc app slot. The server records a
-        native lease, prepares the assigned test environment namespace, and
-        starts the slot-scoped Playwright worker. It does not create an Issue,
-        create a Run, or dispatch a workflow. `slot_index` selects a specific
-        `<project>-slot-N`; omit it to take the lowest available slot. `mode`
-        is `"provision"` for a normal checkout or `"clean_slate"` to reset the
-        slot namespace before preparing it.
+        Use this when you need an ad-hoc app slot. Glimmung chooses an
+        available slot, records a native lease, and starts lease-scoped runtime
+        activation. Callers cannot select a slot or request clean-slate
+        cleanup through checkout; queue-size changes and returns own
+        destructive cleanup.
 
-        Extra `phase_inputs` are stored on the lease alongside
-        `validation_slot_index`, `test_slot_mode`, and `clean_slate`.
+        Checkout may return while activation is still in progress. In that
+        case the response includes `state: "activating"`, `usable: false`, the
+        assigned slot name/index, and `status_url`; poll that status URL or
+        `get_state` until the slot is `active` and `usable` before relying on
+        the environment.
+
         `tank_session_id` is required so Tank's UI can mark the requesting
         session with the leased environment number and URL."""
         normalized_tank_session_id = _tank_session_id(tank_session_id)
@@ -1063,23 +1062,18 @@ def register_tools(
         }
         payload: dict[str, Any] = {
             "project": project,
-            "mode": mode,
             "requester": requester,
             "tank_session_id": normalized_tank_session_id,
         }
         if workflow is not None:
             payload["workflow"] = workflow
-        if slot_index is not None:
-            payload["slot_index"] = slot_index
-        if phase_inputs is not None:
-            payload["phase_inputs"] = phase_inputs
         if ttl_seconds is not None:
             payload["ttl_seconds"] = ttl_seconds
         result = client.post("/v1/test-slots/checkout", json=payload)
         tank_state = None
         if (
             tank_client is not None
-            and result.get("state") in {"active", "claimed"}
+            and result.get("state") in {"activating", "active", "claimed"}
             and result.get("slot_index") is not None
         ):
             slot_url = result.get("url")
