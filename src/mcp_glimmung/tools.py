@@ -235,10 +235,11 @@ def register_tools(
 
     @mcp.tool()
     def list_leases(project: str | None = None) -> dict[str, Any]:
-        """Check lease availability: free hosts, active leases, and pending leases.
+        """Check lease availability: native test slots, free hosts, active leases, and pending leases.
 
         Returns three lists:
-        - `available_hosts`: registered hosts with no current lease (ready to accept work).
+        - `available_test_slots`: native test slots with state `available`.
+        - `available_hosts`: non-drained registered worker hosts with no current lease.
         - `active_leases`: leases currently holding a host or native slot.
         - `pending_leases`: leases queued but not yet assigned capacity.
 
@@ -247,10 +248,12 @@ def register_tools(
         state = _sanitize_state_for_sessions(client.get("/v1/state"))
 
         hosts = state.get("hosts") or []
+        test_slots = state.get("test_environments") or []
         active = state.get("active_leases") or []
         pending = state.get("pending_leases") or []
 
         if project is not None:
+            test_slots = [slot for slot in test_slots if slot.get("project") == project]
             hosts = [
                 h for h in hosts
                 if isinstance(h.get("capabilities"), dict)
@@ -265,6 +268,10 @@ def register_tools(
         ]
 
         return {
+            "available_test_slots": [
+                slot for slot in test_slots
+                if slot.get("state") == "available"
+            ],
             "available_hosts": available_hosts,
             "active_leases": active,
             "pending_leases": pending,

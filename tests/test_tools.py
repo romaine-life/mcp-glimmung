@@ -161,6 +161,20 @@ def test_list_issues_passes_filters_and_defaults_limit() -> None:
 def test_list_leases_excludes_drained_hosts_from_available() -> None:
     tools, client = _registered_tools()
     client.responses[("GET", "/v1/state")] = {
+        "test_environments": [
+            {
+                "project": "tank-operator",
+                "slot_index": 1,
+                "slot_name": "tank-operator-slot-1",
+                "state": "available",
+            },
+            {
+                "project": "tank-operator",
+                "slot_index": 2,
+                "slot_name": "tank-operator-slot-2",
+                "state": "claimed",
+            },
+        ],
         "hosts": [
             {
                 "name": "slot-1",
@@ -181,6 +195,9 @@ def test_list_leases_excludes_drained_hosts_from_available() -> None:
 
     result = tools["list_leases"](project="tank-operator")
 
+    assert [slot["slot_name"] for slot in result["available_test_slots"]] == [
+        "tank-operator-slot-1"
+    ]
     assert [host["name"] for host in result["available_hosts"]] == ["slot-1"]
 
 
