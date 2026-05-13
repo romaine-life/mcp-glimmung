@@ -571,7 +571,7 @@ def test_checkout_test_slot_posts_checkout_payload() -> None:
     )
 
 
-def test_checkout_test_slot_updates_tank_session_on_active_slot() -> None:
+def test_checkout_test_slot_updates_tank_session_on_claimed_slot() -> None:
     mcp = FakeMCP()
     tank = StubTankClient()
 
@@ -584,7 +584,7 @@ def test_checkout_test_slot_updates_tank_session_on_active_slot() -> None:
         ) -> dict[str, Any]:
             self.calls.append(("POST", path, params, json))
             return {
-                "state": "active",
+                "state": "claimed",
                 "project": "tank-operator",
                 "workflow": "test-slot-checkout",
                 "slot_index": 2,

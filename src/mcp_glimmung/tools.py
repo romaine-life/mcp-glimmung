@@ -1016,7 +1016,7 @@ def register_tools(
         tank_state = None
         if (
             tank_client is not None
-            and result.get("state") == "active"
+            and result.get("state") in {"active", "claimed"}
             and result.get("slot_index") is not None
         ):
             slot_url = result.get("url")
