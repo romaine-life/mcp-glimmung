@@ -51,6 +51,13 @@ class GlimmungClient:
         r.raise_for_status()
         return r.json()
 
+    def delete(self, path: str) -> Any:
+        r = self._http.delete(self._base_url + path, headers=self._headers())
+        r.raise_for_status()
+        if not r.content:
+            return {"status": "deleted"}
+        return r.json()
+
     def post(
         self,
         path: str,

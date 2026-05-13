@@ -6,6 +6,7 @@ unexposed — those are runner / orchestrator concerns, not session concerns.
 
 import os
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -405,6 +406,16 @@ def register_tools(
                 "drained": drained,
             },
         )
+
+    @mcp.tool()
+    def delete_host(name: str) -> dict[str, Any]:
+        """Delete a registered Glimmung host inventory row.
+
+        This only removes the legacy host registration record. It does not
+        delete Kubernetes namespaces, DNS records, certificates, or native
+        test-slot warm state.
+        """
+        return client.delete(f"/v1/hosts/{quote(name, safe='')}")
 
     @mcp.tool()
     def list_workflows(
