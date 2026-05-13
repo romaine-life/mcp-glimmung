@@ -24,9 +24,12 @@ class FakeMCP:
 class StubClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, Any] | None, dict[str, Any] | None]] = []
+        self.responses: dict[tuple[str, str], Any] = {}
 
-    def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         self.calls.append(("GET", path, params, None))
+        if ("GET", path) in self.responses:
+            return self.responses[("GET", path)]
         return {"path": path}
 
     def patch(self, path: str, json: dict[str, Any]) -> dict[str, Any]:
@@ -419,6 +422,61 @@ def test_register_project_and_host_post_admin_payloads() -> None:
         ("POST", "/v1/projects", None, project["json"]),
         ("POST", "/v1/hosts", None, host["json"]),
     ]
+
+
+def test_get_test_slot_hot_swap_contract_reads_project_metadata() -> None:
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/projects")] = [
+        {
+            "name": "tank-operator",
+            "metadata": {
+                "test_slot_hot_swap": {
+                    "enabled": True,
+                    "backend": {
+                        "enabled": True,
+                        "target": "/var/run/tank-operator-hot/tank-operator-go",
+                    },
+                }
+            },
+        }
+    ]
+
+    result = tools["get_test_slot_hot_swap_contract"]("tank-operator")
+
+    assert result["enabled"] is True
+    assert result["contract"]["backend"]["target"] == "/var/run/tank-operator-hot/tank-operator-go"
+    assert client.calls[-1] == (
+        "GET",
+        "/v1/projects",
+        {"name": "tank-operator", "limit": 10},
+        None,
+    )
+
+
+def test_record_test_slot_hot_swap_posts_history() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["record_test_slot_hot_swap"](
+        project="tank-operator",
+        slot_name="tank-slot-1",
+        operation="backend",
+        status="ok",
+        diagnostics={"pod": "tank-pod"},
+        timings={"total": "2s"},
+    )
+
+    assert result["path"] == "/v1/test-slots/hot-swap-history"
+    assert result["json"] == {
+        "project": "tank-operator",
+        "slot_name": "tank-slot-1",
+        "entry": {
+            "operation": "backend",
+            "status": "ok",
+            "summary": "",
+            "diagnostics": {"pod": "tank-pod"},
+            "timings": {"total": "2s"},
+        },
+    }
 
 
 def test_playbook_tools_call_http_surface() -> None:
