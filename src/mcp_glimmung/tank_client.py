@@ -1,4 +1,8 @@
-"""Client for Tank's internal session test-state endpoint."""
+"""Client for Tank's internal session test-state endpoint.
+
+Uses a projected service account token minted for the ``tank-operator``
+audience. The orchestrator rejects the default Kubernetes API audience token.
+"""
 from __future__ import annotations
 
 import os
@@ -11,10 +15,7 @@ ORCHESTRATOR_URL = os.environ.get(
     "ORCHESTRATOR_INTERNAL_URL",
     "http://tank-operator.tank-operator.svc:80",
 )
-SA_TOKEN_PATH = os.environ.get(
-    "SA_TOKEN_PATH",
-    "/var/run/secrets/kubernetes.io/serviceaccount/token",
-)
+SA_TOKEN_PATH = os.environ.get("TANK_OPERATOR_SA_TOKEN_PATH", "")
 
 _ERROR_BODY_CAP = 1200
 
