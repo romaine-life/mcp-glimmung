@@ -28,6 +28,10 @@ proxy:
 # Upstream glimmung URL. Defaults to the in-cluster Service.
 glimmungBaseUrl: http://glimmung.glimmung.svc
 
+# In-cluster URL to the Tank orchestrator. Tank-facing calls use a dedicated
+# projected service account token minted for the tank-operator audience.
+orchestratorUrl: http://tank-operator.tank-operator.svc:80
+
 resources:
   requests:
     cpu: 50m

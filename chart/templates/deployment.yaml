@@ -30,6 +30,16 @@ spec:
               value: "{{ .Values.upstreamPort }}"
             - name: GLIMMUNG_BASE_URL
               value: {{ .Values.glimmungBaseUrl | quote }}
+            - name: ORCHESTRATOR_INTERNAL_URL
+              value: "{{ .Values.orchestratorUrl }}"
+            # Audience-scoped SA token for calling Tank /api/internal/*.
+            # Glimmung calls keep using the default token path.
+            - name: TANK_OPERATOR_SA_TOKEN_PATH
+              value: /var/run/secrets/tank-operator/token
+          volumeMounts:
+            - name: tank-operator-sa-token
+              mountPath: /var/run/secrets/tank-operator
+              readOnly: true
           readinessProbe:
             # Server binds 127.0.0.1 (loopback only) — exec probe runs
             # inside the container's netns so localhost resolves.
@@ -60,3 +70,10 @@ spec:
         - name: proxy-config
           configMap:
             name: kube-rbac-proxy
+        - name: tank-operator-sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: tank-operator
+                  expirationSeconds: 3600
+                  path: token
