@@ -105,6 +105,47 @@ def _result_lease_label(result: dict[str, Any]) -> str:
     return "claimed"
 
 
+def _resolve_slot_playwright_ws(client: GlimmungClient, tank_session_id: str) -> str:
+    """Find the active test-slot lease for a Tank session and return its
+    slot-playwright Service ws endpoint.
+
+    Errors if the session does not currently hold an active test-slot lease,
+    or if the lease's slot does not yet expose a playwright endpoint
+    (slot still activating, or the cluster is not running playwright-enabled
+    slots). Sessions must `checkout_test_slot` before calling
+    `inspect_browser_url`.
+    """
+    if not tank_session_id:
+        raise ValueError("tank_session_id required")
+    state = client.get("/v1/state")
+    active_leases = state.get("active_leases") or []
+    for lease in active_leases:
+        if not isinstance(lease, dict):
+            continue
+        metadata = lease.get("metadata") if isinstance(lease.get("metadata"), dict) else {}
+        lease_session_id = (
+            metadata.get("tank_session_id")
+            or metadata.get("tankSessionId")
+        )
+        if lease_session_id != tank_session_id:
+            continue
+        endpoint = (
+            lease.get("playwright_ws_endpoint")
+            or metadata.get("playwright_ws_endpoint")
+        )
+        if isinstance(endpoint, str) and endpoint:
+            return endpoint
+        raise RuntimeError(
+            f"test slot for tank session {tank_session_id!r} has no "
+            "playwright_ws_endpoint yet; slot may still be activating or "
+            "glimmung is not running playwright-enabled slots"
+        )
+    raise RuntimeError(
+        f"no active test-slot lease found for tank session {tank_session_id!r}; "
+        "call checkout_test_slot before inspect_browser_url"
+    )
+
+
 def register_tools(
     mcp: FastMCP, client: GlimmungClient, tank_client: TankClient | None = None
 ) -> None:
@@ -481,6 +522,7 @@ def register_tools(
     @mcp.tool()
     def inspect_browser_url(
         url: str,
+        tank_session_id: str,
         viewport: dict[str, int] | None = None,
         wait_ms: int = 2000,
         timeout_ms: int = 30000,
@@ -494,15 +536,24 @@ def register_tools(
     ) -> dict[str, Any]:
         """Inspect a live URL with Chromium and return browser-state JSON.
 
-        Use for validation URLs when a static screenshot is not enough:
-        the tool waits for the rendered page, captures final URL/status,
+        Runs inside the active test slot's `slot-playwright` pod, so callers
+        must hold a checked-out test slot via `checkout_test_slot` first. The
+        slot's Playwright drives the browser; the MCP host does not. Pass the
+        Tank session id whose lease should be used.
+
+        Use for validation URLs when a static screenshot is not enough: the
+        tool waits for the rendered page, captures final URL/status,
         title/body summary, interesting DOM elements with selectors and
         bounds, console/page errors, failed requests and HTTP >= 400
-        responses, optional accessibility tree, optional screenshot path,
-        and canvas nonblank sampling data.
+        responses, optional accessibility tree, an inline `screenshot_base64`
+        PNG, and canvas nonblank sampling data.
         """
+        ws_endpoint = _resolve_slot_playwright_ws(
+            client, _tank_session_id(tank_session_id)
+        )
         return inspect_url(
             url=url,
+            playwright_ws_endpoint=ws_endpoint,
             viewport=viewport,
             wait_ms=wait_ms,
             timeout_ms=timeout_ms,

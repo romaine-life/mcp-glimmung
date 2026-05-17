@@ -1,6 +1,4 @@
-import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
@@ -21,17 +19,17 @@ const input = JSON.parse(await new Promise((resolve, reject) => {
   process.stdin.on("error", reject);
 }));
 
+if (!input.playwrightWsEndpoint || typeof input.playwrightWsEndpoint !== "string") {
+  throw new Error(
+    "playwrightWsEndpoint is required: inspect_browser_url runs in the leased "
+    + "test slot's slot-playwright pod, not on the MCP host.",
+  );
+}
+
 function truncate(value, limit) {
   const text = String(value ?? "");
   if (text.length <= limit) return text;
   return `${text.slice(0, Math.max(limit - 3, 0)).trimEnd()}...`;
-}
-
-function slug(value) {
-  return String(value || "inspection")
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "inspection";
 }
 
 function interestingElements() {
@@ -161,10 +159,7 @@ const pageErrors = [];
 const failedRequests = [];
 const httpErrors = [];
 
-const browser = await chromium.launch({
-  headless: true,
-  args: ["--no-sandbox", "--disable-dev-shm-usage"],
-});
+const browser = await chromium.connect({ wsEndpoint: input.playwrightWsEndpoint });
 try {
   const context = await browser.newContext({
     viewport: input.viewport || { width: 1440, height: 900 },
@@ -219,13 +214,10 @@ try {
     bodyText = "";
   }
 
-  let screenshotPath = null;
+  let screenshotBase64 = null;
   if (input.screenshot) {
-    const artifactDir = input.artifactDir || "/tmp/glimmung-browser-inspections";
-    await mkdir(artifactDir, { recursive: true });
-    const stamp = startedAt.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
-    screenshotPath = path.join(artifactDir, `${stamp}-${slug(page.url())}.png`);
-    await page.screenshot({ path: screenshotPath, fullPage: input.fullPage !== false });
+    const buf = await page.screenshot({ fullPage: input.fullPage !== false });
+    screenshotBase64 = buf.toString("base64");
   }
 
   let accessibility = null;
@@ -238,7 +230,7 @@ try {
   }
 
   const result = {
-    schema_version: 1,
+    schema_version: 2,
     url: input.url,
     final_url: page.url(),
     status,
@@ -252,7 +244,7 @@ try {
     failed_requests: failedRequests,
     http_errors: httpErrors,
     accessibility,
-    screenshot_path: screenshotPath,
+    screenshot_base64: screenshotBase64,
     canvas: await page.evaluate(canvasStats()),
     inspected_at: startedAt.toISOString(),
   };

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -567,8 +568,20 @@ def test_playbook_tools_call_http_surface() -> None:
 
 
 def test_browser_inspector_tool_uses_shared_inspector(monkeypatch) -> None:
-    tools, _client = _registered_tools()
+    tools, client = _registered_tools()
     calls: list[dict[str, Any]] = []
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "metadata": {
+                    "tank_session_id": "abc123",
+                    "native_slot_name": "tank-operator-slot-1",
+                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                },
+            }
+        ]
+    }
 
     def fake_inspect_url(**kwargs: Any) -> dict[str, Any]:
         calls.append(kwargs)
@@ -578,6 +591,7 @@ def test_browser_inspector_tool_uses_shared_inspector(monkeypatch) -> None:
 
     result = tools["inspect_browser_url"](
         "https://example.test/app",
+        tank_session_id="abc123",
         viewport={"width": 390, "height": 844},
         wait_ms=100,
         screenshot=False,
@@ -586,6 +600,7 @@ def test_browser_inspector_tool_uses_shared_inspector(monkeypatch) -> None:
     assert result == {"final_url": "https://example.test/app", "elements": []}
     assert calls == [{
         "url": "https://example.test/app",
+        "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
         "viewport": {"width": 390, "height": 844},
         "wait_ms": 100,
         "timeout_ms": 30000,
@@ -945,4 +960,79 @@ def test_get_native_run_events_calls_hot_log_surface() -> None:
         "/v1/projects/ambience/issues/44/runs/1/native/events",
         {"attempt_index": 2, "job_id": "agent", "limit": 25},
         None,
+    )
+
+
+def test_inspect_browser_url_errors_when_session_has_no_lease() -> None:
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {"active_leases": []}
+
+    with pytest.raises(RuntimeError, match="no active test-slot lease"):
+        tools["inspect_browser_url"](
+            url="https://example.test/",
+            tank_session_id="abc123",
+        )
+
+
+def test_inspect_browser_url_errors_when_lease_has_no_ws_endpoint() -> None:
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "metadata": {"tank_session_id": "abc123", "native_slot_name": "tank-operator-slot-1"},
+            }
+        ]
+    }
+
+    with pytest.raises(RuntimeError, match="no playwright_ws_endpoint"):
+        tools["inspect_browser_url"](
+            url="https://example.test/",
+            tank_session_id="abc123",
+        )
+
+
+def test_inspect_browser_url_forwards_endpoint_from_active_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from mcp_glimmung import browser_inspector
+
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "metadata": {
+                    "tank_session_id": "abc123",
+                    "native_slot_name": "tank-operator-slot-1",
+                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                },
+            }
+        ]
+    }
+
+    captured: dict[str, Any] = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = json.dumps({"schema_version": 2, "url": "https://example.test/"})
+        stderr = ""
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> FakeCompleted:
+        captured["payload"] = json.loads(kwargs["input"])
+        return FakeCompleted()
+
+    monkeypatch.setattr(browser_inspector.subprocess, "run", fake_run)
+
+    result = tools["inspect_browser_url"](
+        url="https://example.test/",
+        tank_session_id="abc123",
+    )
+
+    assert result["url"] == "https://example.test/"
+    assert (
+        captured["payload"]["playwrightWsEndpoint"]
+        == "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000"
     )

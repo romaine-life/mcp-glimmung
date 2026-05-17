@@ -1,41 +1,58 @@
-import shutil
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from mcp_glimmung.browser_inspector import _slug, _truncate, inspect_url
+from mcp_glimmung import browser_inspector
+from mcp_glimmung.browser_inspector import _truncate, inspect_url
 
 
-def test_slug_and_truncate_keep_artifact_names_stable() -> None:
-    assert _slug("https://example.test/a b?x=1") == "https-example.test-a-b-x-1"
+def test_truncate_caps_long_text() -> None:
     assert _truncate("abcdef", 4) == "a..."
     assert _truncate("abc", 4) == "abc"
 
 
-def test_inspect_url_smoke_with_data_url(tmp_path: Path) -> None:
-    if shutil.which("node") is None:
-        pytest.skip("node is not installed")
+def test_inspect_url_rejects_missing_endpoint() -> None:
+    with pytest.raises(ValueError, match="playwright_ws_endpoint is required"):
+        inspect_url(url="https://example.test/", playwright_ws_endpoint="")
 
-    try:
-        result: dict[str, Any] = inspect_url(
-            url=(
-                "data:text/html,"
-                "<title>Inspector</title>"
-                "<main><h1>Hello</h1><button>Run</button><canvas width='4' height='4'></canvas></main>"
-            ),
-            wait_ms=0,
-            screenshot=True,
-            artifact_dir=tmp_path,
-        )
-    except Exception as exc:
-        if "Cannot find package 'playwright'" in str(exc) or "Executable doesn't exist" in str(exc):
-            pytest.skip("Playwright browser is not installed")
-        raise
 
-    assert result["title"] == "Inspector"
-    assert result["final_url"].startswith("data:text/html")
-    assert any(el["role"] == "button" for el in result["elements"])
-    assert result["canvas"][0]["width"] == 4
-    assert result["screenshot_path"]
-    assert Path(result["screenshot_path"]).exists()
+def test_inspect_url_forwards_payload_to_node_helper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, Any] = {}
+
+    fake_response = {
+        "schema_version": 2,
+        "url": "https://example.test/",
+        "screenshot_base64": "QUJD",
+    }
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = json.dumps(fake_response)
+        stderr = ""
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> FakeCompleted:
+        captured["cmd"] = cmd
+        captured["payload"] = json.loads(kwargs["input"])
+        return FakeCompleted()
+
+    monkeypatch.setattr(browser_inspector.subprocess, "run", fake_run)
+
+    result = inspect_url(
+        url="https://example.test/",
+        playwright_ws_endpoint="ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+        wait_ms=0,
+        screenshot=True,
+    )
+
+    assert result == fake_response
+    assert captured["payload"]["url"] == "https://example.test/"
+    assert (
+        captured["payload"]["playwrightWsEndpoint"]
+        == "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000"
+    )
+    assert captured["payload"]["screenshot"] is True
+    assert "artifactDir" not in captured["payload"]
