@@ -7,7 +7,7 @@ WORKDIR /app
 # the browser itself runs in the leased test slot's `slot-playwright` pod, so
 # no Chromium install (`npx playwright install --with-deps`) on this image.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends nodejs npm \
+    && apt-get install -y --no-install-recommends nodejs npm git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN --mount=type=cache,target=/root/.npm \

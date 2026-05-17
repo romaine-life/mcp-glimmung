@@ -113,10 +113,7 @@ class AuthRomaineLifeExchangeClient:
         any caller that didn't present a JWT (kube-rbac-proxy still
         gated connectivity, but identity is "the pod" not "a user").
         """
-        # Defer the import to dodge an auth_verifier → auth_exchange
-        # cycle at module load time; both import each other through
-        # the http.py glue.
-        from .auth_verifier import current_caller
+        from romaine_auth import current_caller
 
         caller = current_caller()
         if caller is not None:
