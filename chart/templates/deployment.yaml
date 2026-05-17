@@ -32,16 +32,6 @@ spec:
               value: {{ .Values.glimmungBaseUrl | quote }}
             - name: ORCHESTRATOR_INTERNAL_URL
               value: "{{ .Values.orchestratorUrl }}"
-            # auth.romaine.life-audience projected SA token. mcp-glimmung
-            # exchanges it at /api/auth/exchange/k8s for a role=service
-            # JWT and presents that JWT on outbound calls to glimmung and
-            # tank-operator. See src/mcp_glimmung/auth_exchange.py.
-            - name: AUTH_ROMAINE_LIFE_SA_TOKEN_PATH
-              value: /var/run/secrets/auth.romaine.life/token
-          volumeMounts:
-            - name: auth-romaine-sa-token
-              mountPath: /var/run/secrets/auth.romaine.life
-              readOnly: true
           readinessProbe:
             # Server binds 127.0.0.1 (loopback only) — exec probe runs
             # inside the container's netns so localhost resolves.
@@ -68,23 +58,7 @@ spec:
               readOnly: true
           resources:
             {{- toYaml .Values.proxyResources | nindent 12 }}
-      # mcp-glimmung pods must carry the auth.romaine.life lineage
-      # annotations on the pod template so the auth-side exchange knows
-      # which consumer this pod belongs to. For pod-stable consumers
-      # (mcp-glimmung is one), the lineage is fixed across all pods of
-      # the deployment — the auth side resolves identity from the
-      # NAMESPACE_TO_CONSUMER table in src/service-exchange.ts and
-      # doesn't read these annotations today. They're set here as
-      # forward-compat scaffolding for the per-request user attribution
-      # work (the eventual replacement for pod-stable identity).
       volumes:
         - name: proxy-config
           configMap:
             name: kube-rbac-proxy
-        - name: auth-romaine-sa-token
-          projected:
-            sources:
-              - serviceAccountToken:
-                  audience: https://auth.romaine.life
-                  expirationSeconds: 3600
-                  path: token

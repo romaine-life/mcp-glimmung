@@ -1,10 +1,12 @@
 """Integration tests for CallerJWTMiddleware.
 
 Verifies the middleware:
-  - Accepts requests with no Authorization header (no JWT presented).
-  - 401s when a present-but-invalid JWT is offered.
+  - 401s requests with no X-Auth-Romaine-Token header.
+  - 401s when an invalid JWT is offered.
   - Binds the resolved Caller to the ContextVar on success.
   - Bypasses verification for /healthz.
+  - Ignores Authorization header (it's stripped by kube-rbac-proxy
+    in front of mcp-glimmung; the JWT rides on X-Auth-Romaine-Token).
 """
 
 from __future__ import annotations
@@ -24,9 +26,8 @@ from starlette.testclient import TestClient
 from romaine_auth import (
     CALLER,
     AuthRomaineLifeVerifier,
-    Caller,
 )
-from mcp_glimmung.http import CallerJWTMiddleware
+from mcp_glimmung.http import CALLER_JWT_HEADER, CallerJWTMiddleware
 
 
 @pytest.fixture(scope="module")
@@ -93,16 +94,16 @@ def _mint(key, **overrides):
     return jwt.encode(claims, key, algorithm="RS256", headers={"kid": "test"})
 
 
-def test_no_authorization_header_passes_through_as_unknown(signing_key):
+def test_missing_header_returns_401(signing_key):
     client = TestClient(_build_app(signing_key))
     r = client.get("/whoami")
-    assert r.status_code == 200
-    assert r.json() == {"caller": None}
+    assert r.status_code == 401
+    assert CALLER_JWT_HEADER in r.json()["error"]
 
 
 def test_invalid_jwt_returns_401(signing_key):
     client = TestClient(_build_app(signing_key))
-    r = client.get("/whoami", headers={"Authorization": "Bearer not-a-real-jwt"})
+    r = client.get("/whoami", headers={CALLER_JWT_HEADER: "not-a-real-jwt"})
     assert r.status_code == 401
     assert "invalid auth.romaine.life JWT" in r.json()["error"]
 
@@ -110,7 +111,7 @@ def test_invalid_jwt_returns_401(signing_key):
 def test_valid_admin_jwt_binds_caller(signing_key):
     client = TestClient(_build_app(signing_key))
     token = _mint(signing_key)
-    r = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
+    r = client.get("/whoami", headers={CALLER_JWT_HEADER: token})
     assert r.status_code == 200
     body = r.json()
     assert body["caller"]["role"] == "admin"
@@ -123,11 +124,11 @@ def test_valid_service_jwt_binds_actor_email(signing_key):
     token = _mint(
         signing_key,
         role="service",
-        email="pod-mcp@service.mcp-glimmung.romaine.life",
+        email="pod-session-x@service.tank.romaine.life",
         actor_email="USER@example.com",
-        sub="svc:mcp-glimmung:mcp-glimmung",
+        sub="svc:tank:session-x",
     )
-    r = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
+    r = client.get("/whoami", headers={CALLER_JWT_HEADER: token})
     assert r.status_code == 200
     body = r.json()
     assert body["caller"]["role"] == "service"
@@ -138,19 +139,29 @@ def test_valid_service_jwt_binds_actor_email(signing_key):
 def test_healthz_bypasses_jwt_verification(signing_key):
     """/healthz must work without auth — liveness probes don't carry a JWT."""
     client = TestClient(_build_app(signing_key))
-    r = client.get("/healthz", headers={"Authorization": "Bearer garbage"})
+    r = client.get("/healthz")
     assert r.status_code == 200
 
 
 def test_expired_jwt_returns_401(signing_key):
     client = TestClient(_build_app(signing_key))
     token = _mint(signing_key, exp=int(time.time()) - 120)
-    r = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
+    r = client.get("/whoami", headers={CALLER_JWT_HEADER: token})
     assert r.status_code == 401
 
 
 def test_pending_role_returns_401(signing_key):
     client = TestClient(_build_app(signing_key))
     token = _mint(signing_key, role="pending")
+    r = client.get("/whoami", headers={CALLER_JWT_HEADER: token})
+    assert r.status_code == 401
+
+
+def test_authorization_header_ignored(signing_key):
+    """kube-rbac-proxy strips Authorization before forwarding upstream,
+    but if something downstream sends it, we still require the JWT to
+    arrive on X-Auth-Romaine-Token. Authorization-only must 401."""
+    client = TestClient(_build_app(signing_key))
+    token = _mint(signing_key)
     r = client.get("/whoami", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 401

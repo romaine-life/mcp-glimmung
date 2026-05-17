@@ -1,13 +1,14 @@
 """HTTP client for glimmung.
 
-Outbound auth is an auth.romaine.life-issued service-role JWT obtained
-by exchanging the pod's projected SA token (audience
-`https://auth.romaine.life`) at the IdP's exchange endpoint. Glimmung
-verifies the JWT against auth.romaine.life's JWKS — same trust root
-as every other relying party in the .romaine.life ecosystem.
+Outbound auth forwards the inbound caller's auth.romaine.life JWT —
+glimmung verifies against the same JWKS, so the caller's actor_email
+rides through the call chain end-to-end without any per-app re-mint.
 
-The JWT is cached and refreshed near expiry by AuthRomaineLifeExchangeClient;
-mcp-glimmung doesn't re-exchange on every call.
+The current caller is bound by CallerJWTMiddleware in http.py and read
+back here via romaine_auth.current_caller(). Hitting None means a
+request reached a tool handler without going through the middleware,
+which is a bug — the middleware requires the JWT on every non-/healthz
+path.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from .auth_exchange import AuthRomaineLifeExchangeClient, default_exchange_client
+from romaine_auth import current_caller
 
 log = logging.getLogger(__name__)
 
@@ -29,14 +30,18 @@ class GlimmungClient:
         self,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 30.0,
-        exchange_client: AuthRomaineLifeExchangeClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._http = httpx.Client(timeout=timeout)
-        self._exchange = exchange_client or default_exchange_client()
 
     def _headers(self) -> dict[str, str]:
-        return self._exchange.bearer_header()
+        caller = current_caller()
+        if caller is None:
+            raise RuntimeError(
+                "no current_caller() bound; "
+                "CallerJWTMiddleware should have 401'd this request"
+            )
+        return {"Authorization": f"Bearer {caller.raw_token}"}
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         r = self._http.get(self._base_url + path, params=params, headers=self._headers())
