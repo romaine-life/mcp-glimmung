@@ -1,21 +1,24 @@
 """Client for Tank's internal session test-state endpoint.
 
-Uses a projected service account token minted for the ``tank-operator``
-audience. The orchestrator rejects the default Kubernetes API audience token.
+Outbound auth is an auth.romaine.life-issued service-role JWT — same
+exchanged token as GlimmungClient uses. tank-operator's verifier (see
+backend-go/internal/auth/auth.go in nelsong6/tank-operator) accepts
+role=service tokens with the same JWKS-based check, no per-app
+TokenReview needed.
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 import httpx
+
+from .auth_exchange import AuthRomaineLifeExchangeClient, default_exchange_client
 
 ORCHESTRATOR_URL = os.environ.get(
     "ORCHESTRATOR_INTERNAL_URL",
     "http://tank-operator.tank-operator.svc:80",
 )
-SA_TOKEN_PATH = os.environ.get("TANK_OPERATOR_SA_TOKEN_PATH", "")
 
 _ERROR_BODY_CAP = 1200
 
@@ -39,21 +42,13 @@ class TankClient:
     def __init__(
         self,
         orchestrator_url: str = ORCHESTRATOR_URL,
-        sa_token_path: str = SA_TOKEN_PATH,
+        exchange_client: AuthRomaineLifeExchangeClient | None = None,
     ) -> None:
         self._url = orchestrator_url.rstrip("/")
-        self._sa_token_path = Path(sa_token_path)
-
-    def _sa_token(self) -> str:
-        try:
-            return self._sa_token_path.read_text().strip()
-        except OSError as exc:
-            raise RuntimeError(
-                f"could not read SA token at {self._sa_token_path}: {exc}"
-            ) from exc
+        self._exchange = exchange_client or default_exchange_client()
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._sa_token()}"}
+        return self._exchange.bearer_header()
 
     def set_test_environment(
         self,
