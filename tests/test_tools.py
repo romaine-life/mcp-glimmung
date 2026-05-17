@@ -520,6 +520,64 @@ def test_record_test_slot_hot_swap_posts_history() -> None:
     }
 
 
+def test_apply_test_slot_hot_swap_posts_minimal() -> None:
+    tools, _ = _registered_tools()
+
+    result = tools["apply_test_slot_hot_swap"](
+        project="tank-operator",
+        artifact_kind="agent_runner",
+        git_ref="feat/durable-stop-request",
+        slot_name="tank-operator-slot-1",
+    )
+
+    assert result["path"] == "/v1/test-slots/apply-hot-swap"
+    assert result["json"] == {
+        "project": "tank-operator",
+        "artifact_kind": "agent_runner",
+        "git_ref": "feat/durable-stop-request",
+        "slot_name": "tank-operator-slot-1",
+    }
+
+
+def test_apply_test_slot_hot_swap_passes_timeout_and_slot_index() -> None:
+    tools, _ = _registered_tools()
+
+    result = tools["apply_test_slot_hot_swap"](
+        project="tank-operator",
+        artifact_kind="agent_runner",
+        git_ref="main",
+        slot_index=2,
+        timeout_seconds=300,
+    )
+
+    assert result["path"] == "/v1/test-slots/apply-hot-swap"
+    assert result["json"] == {
+        "project": "tank-operator",
+        "artifact_kind": "agent_runner",
+        "git_ref": "main",
+        "slot_index": 2,
+        "timeout_seconds": 300,
+    }
+
+
+def test_apply_test_slot_hot_swap_omits_unset_optionals() -> None:
+    tools, _ = _registered_tools()
+
+    # Caller specifies neither slot_index nor slot_name (the endpoint will
+    # reject this; the wrapper just passes through what it was given).
+    result = tools["apply_test_slot_hot_swap"](
+        project="tank-operator",
+        artifact_kind="agent_runner",
+        git_ref="main",
+    )
+
+    assert result["json"] == {
+        "project": "tank-operator",
+        "artifact_kind": "agent_runner",
+        "git_ref": "main",
+    }
+
+
 def test_playbook_tools_call_http_surface() -> None:
     tools, client = _registered_tools()
 

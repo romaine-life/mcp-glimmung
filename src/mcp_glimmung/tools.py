@@ -396,6 +396,65 @@ def register_tools(
         return client.post("/v1/test-slots/hot-swap-history", json=payload)
 
     @mcp.tool()
+    def apply_test_slot_hot_swap(
+        project: str,
+        artifact_kind: str,
+        git_ref: str,
+        slot_index: int | None = None,
+        slot_name: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Build new code at a git ref and place it onto a running test slot.
+
+        End-to-end developer dev loop, sync UX: this one call blocks until the
+        dispatched Kubernetes Job completes (clones the repo at git_ref, runs
+        the contract's build_command in the contract's builder_image, kubectl-
+        streams the artifact into the target session pod, sends the configured
+        restart signal). Then returns a structured result.
+
+        The previous workflow (per the /test agent skill) was a manual dance
+        of `kubectl cp` + `kubectl exec` + `kill -HUP 1`. This tool replaces
+        all of that — the dev's only action is the call.
+
+        Args:
+            project: Glimmung project name (e.g., "tank-operator").
+            artifact_kind: Which contract sub-block applies. v1 supports
+                "agent_runner" only; static and backend continue to use the
+                glimmung-agent CLI path until their consumers opt in.
+            git_ref: Branch or tag to clone. Pushed beforehand.
+            slot_index or slot_name: Identifies the active test-slot lease.
+                Exactly one of the two should be set.
+            timeout_seconds: Server-side bound. Clamped to [1, 600]. Default
+                120 (covers 30-90s typical build-and-swap + buffer for cold
+                image pulls).
+
+        Returns the structured result from POST /v1/test-slots/apply-hot-swap:
+            {"lease": "...", "apply": {"outcome": "persisted" | "build_failed"
+              | "swap_failed" | "timeout", "job_name": ..., "target_pods":
+              [...], "build_logs_tail": ..., "swap_logs_tail": ..., "timings":
+              {...}}, "history_entry": {...}}
+
+        Hot-swap history is recorded on every outcome — durable state lives
+        in the lease, not in the response. A caller that disconnects mid-
+        request can re-query via the lease's metadata to see the result.
+
+        See docs/test-slot-hot-swap.md in nelsong6/glimmung for the workflow
+        contract and the contract shape projects need to declare.
+        """
+        payload: dict[str, Any] = {
+            "project": project,
+            "artifact_kind": artifact_kind,
+            "git_ref": git_ref,
+        }
+        if slot_name:
+            payload["slot_name"] = slot_name
+        if slot_index is not None:
+            payload["slot_index"] = slot_index
+        if timeout_seconds is not None:
+            payload["timeout_seconds"] = timeout_seconds
+        return client.post("/v1/test-slots/apply-hot-swap", json=payload)
+
+    @mcp.tool()
     def list_workflows(
         project: str | None = None,
         name: str | None = None,
