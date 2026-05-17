@@ -52,10 +52,20 @@ def sa_token_path(tmp_path: Path) -> Path:
 
 def test_jwt_returned_and_cached(sa_token_path: Path) -> None:
     now = [1_000.0]
-    calls = []
+    calls: list[dict] = []
 
     def handler(request: httpx.Request) -> tuple[int, dict]:
-        calls.append(json.loads(request.content))
+        # The auth.romaine.life /api/auth/exchange/k8s endpoint reads
+        # the SA token from `Authorization: Bearer <sa_jwt>`. Record the
+        # header + body so the test pins both halves of the contract:
+        # the header carries the token, the body is empty (the route
+        # ignores any body).
+        calls.append(
+            {
+                "authorization": request.headers.get("Authorization"),
+                "body": bytes(request.content),
+            }
+        )
         return 200, {
             "token": _jwt_with_exp(now[0] + 900),
             "expires_at": now[0] + 900,
@@ -78,8 +88,10 @@ def test_jwt_returned_and_cached(sa_token_path: Path) -> None:
     assert h1 == h2
     # Cached: only one exchange call.
     assert len(calls) == 1
-    # The exchange request body is the SA token bytes from the mount.
-    assert calls[0] == {"token": "k8s-sa-token-bytes"}
+    # The SA token rides on the Authorization header, not in a body —
+    # the endpoint contract is Bearer-only.
+    assert calls[0]["authorization"] == "Bearer k8s-sa-token-bytes"
+    assert calls[0]["body"] == b""
 
 
 def test_refresh_when_near_expiry(sa_token_path: Path) -> None:

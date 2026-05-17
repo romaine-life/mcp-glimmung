@@ -124,11 +124,17 @@ class AuthRomaineLifeExchangeClient:
         return {"Authorization": f"Bearer {self.jwt()}"}
 
     def _exchange(self) -> _CachedJWT:
+        # The auth.romaine.life /api/auth/exchange/k8s endpoint reads the
+        # K8s SA token from `Authorization: Bearer <jwt>`, not from a
+        # JSON body. Sending the token in the body produced silent 401
+        # `{"error":"missing bearer token"}` responses because the route
+        # never inspects the body — the contract is documented in
+        # nelsong6/auth `src/server.ts` (the handler that emits the
+        # "missing bearer token" 401 when the Bearer header is absent).
         sa_token = self._read_sa_token()
         r = self._http.post(
             self._exchange_url,
-            json={"token": sa_token},
-            headers={"Content-Type": "application/json"},
+            headers={"Authorization": f"Bearer {sa_token}"},
         )
         if r.status_code != 200:
             body = r.text[:400] if r.text else ""
