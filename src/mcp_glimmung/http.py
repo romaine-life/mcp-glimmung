@@ -1,4 +1,4 @@
-"""HTTP entrypoint — streamable-http transport, layered auth.
+"""HTTP entrypoint — streamable-http transport, required JWT auth.
 
 Two layers gate inbound calls:
 
@@ -8,22 +8,26 @@ Two layers gate inbound calls:
      identity. Binding loopback so direct pod-IP:8080 access bypasses
      nothing.
 
-  2. **auth.romaine.life JWT** (in this process): if the caller also
-     presents an Authorization: Bearer JWT signed by auth.romaine.life,
-     the CallerJWTMiddleware verifies it against the IdP's JWKS and
-     binds the resolved Caller (sub, email, role, actor_email) to a
-     ContextVar. Tool handlers can then attribute their work to a
-     specific human via Caller.display_actor.
+  2. **auth.romaine.life JWT** (in this process): the caller's
+     auth.romaine.life-issued JWT arrives in the
+     ``X-Auth-Romaine-Token`` header (kube-rbac-proxy consumes
+     ``Authorization`` for its own TokenReview and strips it before
+     forwarding upstream, so the JWT rides on a separate header).
+     ``CallerJWTMiddleware`` verifies the JWT against the IdP's JWKS
+     and binds the resolved Caller (sub, email, role, actor_email) to
+     a ContextVar. Tool handlers attribute their work to a specific
+     human via Caller.display_actor.
 
-Layer 2 is OPTIONAL on the way in (no JWT means caller is "unknown" to
-this process, layer 1 is still gating connectivity), but when present
-the JWT must verify or the request is 401'd. Half-trusting a malformed
-JWT would be worse than ignoring the header entirely.
+     The header is REQUIRED on every non-``/healthz`` path. Missing
+     or invalid → 401. There is no fallback to a synthetic identity;
+     mcp-auth-proxy in session pods always injects the header, and
+     anything that reaches this surface without it is unattributed
+     and refused.
 
-Outbound auth to glimmung: prefers forwarding the inbound JWT (preserves
-the caller's actor_email through to glimmung's audit log); falls back
-to the pod-stable exchanged JWT (auth_exchange.py) when no inbound JWT
-was presented. See glimmung_client.py.
+Outbound auth to glimmung / tank-operator: forwards the inbound
+caller's raw JWT. Same trust root (auth.romaine.life JWKS) on the
+receiving end, so the actor_email chain rides through end-to-end
+without any per-app re-minting.
 """
 
 import logging
@@ -46,12 +50,20 @@ from romaine_auth import (
     default_verifier,
     warn_jwks_unreachable,
 )
+
 from .caller import CALLER_POD_IP, extract_source_pod_ip
 from .glimmung_client import GlimmungClient
 from .tank_client import TankClient
 from .tools import register_tools
 
 log = logging.getLogger(__name__)
+
+# Header name shared with mcp-tank-operator and mcp-auth-proxy. The
+# inbound auth.romaine.life service JWT rides on this header because
+# kube-rbac-proxy strips Authorization. Changing it requires a
+# cross-repo coordinated deploy (mcp-auth-proxy in tank-operator
+# injects the same name).
+CALLER_JWT_HEADER = "X-Auth-Romaine-Token"
 
 
 class CallerPodIPMiddleware(BaseHTTPMiddleware):
@@ -69,20 +81,17 @@ class CallerPodIPMiddleware(BaseHTTPMiddleware):
 
 
 class CallerJWTMiddleware(BaseHTTPMiddleware):
-    """Verify Authorization: Bearer JWT against auth.romaine.life's JWKS
-    and bind the resolved Caller to a ContextVar.
+    """Verify the X-Auth-Romaine-Token JWT against auth.romaine.life's
+    JWKS and bind the resolved Caller to a ContextVar.
 
-    Verification is best-effort: missing or empty Authorization header
-    leaves the Caller as None and proceeds (kube-rbac-proxy is still
-    gating connectivity). A *present* but invalid JWT is rejected with
-    401 — a malformed token is more suspect than no token.
+    The header is required on every non-/healthz path — missing or
+    invalid → 401. No fallback to a synthetic identity; every tool
+    call must be attributable to a real caller.
     """
 
-    # Routes that should bypass JWT verification entirely. /healthz is
-    # the liveness probe path and shouldn't require auth.
     _BYPASS_PATHS = frozenset({"/healthz"})
 
-    def __init__(self, app, verifier: AuthRomaineLifeVerifier | None = None):
+    def __init__(self, app, verifier: AuthRomaineLifeVerifier):
         super().__init__(app)
         self._verifier = verifier
 
@@ -90,19 +99,13 @@ class CallerJWTMiddleware(BaseHTTPMiddleware):
         if request.url.path in self._BYPASS_PATHS:
             return await call_next(request)
 
-        authz = request.headers.get("authorization", "")
-        if not authz.lower().startswith("bearer "):
-            # No JWT presented. kube-rbac-proxy is still doing its job;
-            # we just don't get user attribution this call.
-            return await call_next(request)
+        token = request.headers.get(CALLER_JWT_HEADER, "").strip()
+        if not token:
+            return JSONResponse(
+                {"error": f"missing {CALLER_JWT_HEADER} header"},
+                status_code=401,
+            )
 
-        if self._verifier is None:
-            # Verifier not constructed (test env or misconfig). Skip
-            # verification but log so we notice in production.
-            log.warning("inbound bearer present but JWT verifier not configured; skipping")
-            return await call_next(request)
-
-        token = authz[len("bearer "):].strip()
         try:
             caller = self._verifier.verify(token)
         except (jwt.PyJWTError, ValueError) as exc:
@@ -112,8 +115,6 @@ class CallerJWTMiddleware(BaseHTTPMiddleware):
                 status_code=401,
             )
         except Exception as exc:
-            # PyJWKClient raises URLError / OSError on network failure.
-            # Rate-limit the warning so a JWKS outage doesn't flood logs.
             warn_jwks_unreachable(
                 os.environ.get("AUTH_ROMAINE_LIFE_JWKS_URL", "<default>"), exc
             )
@@ -167,10 +168,7 @@ def build_app() -> Starlette:
 
     # JWT verifier shared across all inbound requests. Construction
     # touches no network — PyJWKClient defers JWKS fetch until first
-    # verify — so it's safe at import time. If env points it at a
-    # broken JWKS URL, the first verify fails with 503 (handled in
-    # CallerJWTMiddleware) and the absence of a JWT on subsequent
-    # requests is tolerated.
+    # verify — so it's safe at import time.
     verifier = default_verifier()
 
     return Starlette(
@@ -182,8 +180,7 @@ def build_app() -> Starlette:
         middleware=[
             # CallerJWTMiddleware runs first so the resolved Caller is
             # bound to the ContextVar before downstream handlers (and
-            # CallerPodIPMiddleware, which doesn't depend on it but
-            # logs are easier to read in this order) see the request.
+            # CallerPodIPMiddleware) see the request.
             Middleware(CallerJWTMiddleware, verifier=verifier),
             Middleware(CallerPodIPMiddleware),
         ],

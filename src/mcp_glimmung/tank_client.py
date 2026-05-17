@@ -1,10 +1,8 @@
 """Client for Tank's internal session test-state endpoint.
 
-Outbound auth is an auth.romaine.life-issued service-role JWT — same
-exchanged token as GlimmungClient uses. tank-operator's verifier (see
-backend-go/internal/auth/auth.go in nelsong6/tank-operator) accepts
-role=service tokens with the same JWKS-based check, no per-app
-TokenReview needed.
+Outbound auth forwards the inbound caller's auth.romaine.life JWT —
+tank-operator's RomaineLifeJWTVerifier accepts the same JWKS-backed
+service tokens, so the caller's actor_email rides through end-to-end.
 """
 from __future__ import annotations
 
@@ -13,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from .auth_exchange import AuthRomaineLifeExchangeClient, default_exchange_client
+from romaine_auth import current_caller
 
 ORCHESTRATOR_URL = os.environ.get(
     "ORCHESTRATOR_INTERNAL_URL",
@@ -42,13 +40,17 @@ class TankClient:
     def __init__(
         self,
         orchestrator_url: str = ORCHESTRATOR_URL,
-        exchange_client: AuthRomaineLifeExchangeClient | None = None,
     ) -> None:
         self._url = orchestrator_url.rstrip("/")
-        self._exchange = exchange_client or default_exchange_client()
 
     def _headers(self) -> dict[str, str]:
-        return self._exchange.bearer_header()
+        caller = current_caller()
+        if caller is None:
+            raise RuntimeError(
+                "no current_caller() bound; "
+                "CallerJWTMiddleware should have 401'd this request"
+            )
+        return {"Authorization": f"Bearer {caller.raw_token}"}
 
     def set_test_environment(
         self,

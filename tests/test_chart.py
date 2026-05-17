@@ -1,4 +1,10 @@
-"""Regression tests for the Helm chart's auth.romaine.life token contract."""
+"""Regression tests for the Helm chart's deployment contract.
+
+mcp-glimmung no longer mints its own outbound JWT — every request
+forwards the inbound caller's auth.romaine.life JWT directly, so the
+projected SA token mount is retired. These tests guard against
+reintroducing it.
+"""
 
 from __future__ import annotations
 
@@ -8,24 +14,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_deployment_projects_auth_romaine_life_audience_token() -> None:
+def test_deployment_does_not_mount_auth_romaine_sa_token() -> None:
     deployment = (ROOT / "chart/templates/deployment.yaml").read_text()
 
-    # The Stage B switchover replaced the tank-operator-audience SA
-    # token (used directly as the outbound bearer) with an
-    # auth.romaine.life-audience SA token that gets exchanged for a
-    # role=service JWT. Both glimmung and tank-operator verify the JWT
-    # against auth.romaine.life's JWKS, so the projected token's
-    # audience must match the IdP's issuer (which is also the audience
-    # the IdP's verifyK8sSAToken pins).
-    assert "AUTH_ROMAINE_LIFE_SA_TOKEN_PATH" in deployment
-    assert "value: /var/run/secrets/auth.romaine.life/token" in deployment
-    assert "name: auth-romaine-sa-token" in deployment
-    assert "audience: https://auth.romaine.life" in deployment
-    assert "expirationSeconds: 3600" in deployment
+    # The pod-stable consumer model (mcp-glimmung exchanges its own SA
+    # token at /api/auth/exchange/k8s, mints a synthetic identity, and
+    # uses it for outbound calls) was retired in favor of forwarding the
+    # inbound caller's JWT directly. No SA token mount, no env var, no
+    # outbound exchange.
+    assert "AUTH_ROMAINE_LIFE_SA_TOKEN_PATH" not in deployment
+    assert "auth-romaine-sa-token" not in deployment
+    assert "audience: https://auth.romaine.life" not in deployment
 
-    # The tank-operator-audience token volume + env var are retired.
-    # mcp-glimmung now obtains its tank-operator credential via the
-    # exchanged role=service JWT, same as for glimmung.
+    # The earlier (pre-#37) tank-operator-audience token is also gone.
     assert "TANK_OPERATOR_SA_TOKEN_PATH" not in deployment
     assert "audience: tank-operator" not in deployment
