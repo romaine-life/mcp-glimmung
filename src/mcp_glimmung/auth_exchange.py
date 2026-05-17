@@ -100,6 +100,27 @@ class AuthRomaineLifeExchangeClient:
             return fresh.token
 
     def bearer_header(self) -> dict[str, str]:
+        """Return the bearer header for outbound calls.
+
+        Prefers forwarding the **inbound caller's JWT** when one is
+        present on the current request (set by CallerJWTMiddleware via
+        the CALLER ContextVar). Forwarding preserves the caller's
+        actor_email — glimmung's audit log records the originating
+        human, not the pod-stable mcp-glimmung identity.
+
+        Falls back to the **pod-stable exchanged JWT** when there's no
+        inbound caller — e.g., internal warmup paths, background tasks,
+        any caller that didn't present a JWT (kube-rbac-proxy still
+        gated connectivity, but identity is "the pod" not "a user").
+        """
+        # Defer the import to dodge an auth_verifier → auth_exchange
+        # cycle at module load time; both import each other through
+        # the http.py glue.
+        from .auth_verifier import current_caller
+
+        caller = current_caller()
+        if caller is not None:
+            return {"Authorization": f"Bearer {caller.raw_token}"}
         return {"Authorization": f"Bearer {self.jwt()}"}
 
     def _exchange(self) -> _CachedJWT:
