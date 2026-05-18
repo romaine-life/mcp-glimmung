@@ -123,11 +123,35 @@ def _resolve_slot_playwright_ws(client: GlimmungClient, tank_session_id: str) ->
         if not isinstance(lease, dict):
             continue
         metadata = lease.get("metadata") if isinstance(lease.get("metadata"), dict) else {}
-        lease_session_id = (
-            metadata.get("tank_session_id")
-            or metadata.get("tankSessionId")
-        )
-        if lease_session_id != tank_session_id:
+        # Glimmung records the requester identity inside a nested `requester`
+        # object (both at `lease.requester` and at `lease.metadata.requester`),
+        # and the tank session id lives at `requester.metadata.tank_session_id`.
+        # Earlier revisions of this helper looked at `lease.metadata.tank_session_id`
+        # directly — that path is never populated on the live wire shape, so the
+        # check was a guaranteed miss and `inspect_browser_url` always
+        # rejected callers as "no active test-slot lease". Walk every place
+        # glimmung might surface the id; explicit `tank_session_id` on the
+        # flat metadata is still accepted for forward-compat in case the
+        # server adopts a denormalized shape later.
+        candidates: list[str] = []
+        flat = metadata.get("tank_session_id") or metadata.get("tankSessionId")
+        if isinstance(flat, str):
+            candidates.append(flat)
+        for requester_obj in (
+            metadata.get("requester"),
+            lease.get("requester"),
+        ):
+            if not isinstance(requester_obj, dict):
+                continue
+            label = requester_obj.get("label")
+            if isinstance(label, str) and requester_obj.get("kind") == "tank_session":
+                candidates.append(label)
+            inner = requester_obj.get("metadata")
+            if isinstance(inner, dict):
+                nested = inner.get("tank_session_id") or inner.get("tankSessionId")
+                if isinstance(nested, str):
+                    candidates.append(nested)
+        if tank_session_id not in candidates:
             continue
         endpoint = (
             lease.get("playwright_ws_endpoint")

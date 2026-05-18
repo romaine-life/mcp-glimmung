@@ -1034,11 +1034,26 @@ def test_inspect_browser_url_errors_when_session_has_no_lease() -> None:
 
 def test_inspect_browser_url_errors_when_lease_has_no_ws_endpoint() -> None:
     tools, client = _registered_tools()
+    # Mirror the real wire shape Glimmung emits for native test-slot leases:
+    # the tank session id lives at requester.metadata.tank_session_id, not at
+    # the flat metadata level. The lookup must walk the nested path.
     client.responses[("GET", "/v1/state")] = {
         "active_leases": [
             {
                 "id": "lease-1",
-                "metadata": {"tank_session_id": "abc123", "native_slot_name": "tank-operator-slot-1"},
+                "metadata": {
+                    "native_slot_name": "tank-operator-slot-1",
+                    "requester": {
+                        "kind": "tank_session",
+                        "label": "abc123",
+                        "metadata": {"tank_session_id": "abc123"},
+                    },
+                },
+                "requester": {
+                    "kind": "tank_session",
+                    "label": "abc123",
+                    "metadata": {"tank_session_id": "abc123"},
+                },
             }
         ]
     }
@@ -1058,15 +1073,25 @@ def test_inspect_browser_url_forwards_endpoint_from_active_lease(
     from mcp_glimmung import browser_inspector
 
     tools, client = _registered_tools()
+    # Realistic Glimmung lease shape: id under the nested requester object.
     client.responses[("GET", "/v1/state")] = {
         "active_leases": [
             {
                 "id": "lease-1",
                 "metadata": {
-                    "tank_session_id": "abc123",
                     "native_slot_name": "tank-operator-slot-1",
-                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                    "requester": {
+                        "kind": "tank_session",
+                        "label": "abc123",
+                        "metadata": {"tank_session_id": "abc123"},
+                    },
                 },
+                "requester": {
+                    "kind": "tank_session",
+                    "label": "abc123",
+                    "metadata": {"tank_session_id": "abc123"},
+                },
+                "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
             }
         ]
     }
@@ -1094,3 +1119,75 @@ def test_inspect_browser_url_forwards_endpoint_from_active_lease(
         captured["payload"]["playwrightWsEndpoint"]
         == "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000"
     )
+
+
+def test_inspect_browser_url_matches_via_requester_label_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Belt-and-suspenders: a lease whose only session-id surface is the
+    `requester.label` field (no nested `requester.metadata.tank_session_id`)
+    still resolves. Glimmung populates `label` for every tank-session
+    requester, so this is the minimum-shape match.
+    """
+
+    import json
+
+    from mcp_glimmung import browser_inspector
+
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-2",
+                "metadata": {"native_slot_name": "tank-operator-slot-1"},
+                "requester": {
+                    "kind": "tank_session",
+                    "label": "abc123",
+                },
+                "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+            }
+        ]
+    }
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = json.dumps({"schema_version": 2, "url": "https://example.test/"})
+        stderr = ""
+
+    monkeypatch.setattr(browser_inspector.subprocess, "run", lambda *a, **kw: FakeCompleted())
+
+    result = tools["inspect_browser_url"](
+        url="https://example.test/",
+        tank_session_id="abc123",
+    )
+    assert result["url"] == "https://example.test/"
+
+
+def test_inspect_browser_url_label_match_requires_tank_session_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `requester.label` that happens to numerically match must NOT resolve
+    when the requester kind is something other than `tank_session` (e.g. a
+    bot/run requester whose label is unrelated to tank session ids).
+    """
+
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-3",
+                "metadata": {"native_slot_name": "tank-operator-slot-1"},
+                "requester": {
+                    "kind": "glimmung_run",
+                    "label": "abc123",
+                },
+                "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+            }
+        ]
+    }
+
+    with pytest.raises(RuntimeError, match="no active test-slot lease"):
+        tools["inspect_browser_url"](
+            url="https://example.test/",
+            tank_session_id="abc123",
+        )
