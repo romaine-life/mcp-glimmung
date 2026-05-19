@@ -618,6 +618,9 @@ def register_tools(
         capture_network: bool = True,
         max_elements: int = 80,
         body_text_limit: int = 4000,
+        cookies: list[dict[str, Any]] | None = None,
+        extra_http_headers: dict[str, str] | None = None,
+        local_storage: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Inspect a live URL with Chromium and return browser-state JSON.
 
@@ -632,6 +635,39 @@ def register_tools(
         bounds, console/page errors, failed requests and HTTP >= 400
         responses, optional accessibility tree, an inline `screenshot_base64`
         PNG, and canvas nonblank sampling data.
+
+        Auth-injection parameters drive an *authenticated* browse — the
+        slot-playwright pod holds no credentials of its own, so the
+        caller is the only source of identity. Three knobs, all forwarded
+        directly to Playwright's `BrowserContext` before `page.goto`:
+
+        - `cookies`: list of Playwright cookie dicts, applied via
+          `context.addCookies`. The tank-operator-slot pattern:
+
+              cookies=[{
+                  "name": "auth_token",
+                  "value": "<minted session jwt>",
+                  "url": "https://tank-operator-slot-1.tank.dev.romaine.life",
+                  "httpOnly": True,
+                  "secure": True,
+                  "sameSite": "Lax",
+              }]
+
+          The session JWT is what the caller gets back from POSTing its
+          `auth.romaine.life` service token to the target slot's
+          `/api/auth/exchange`.
+        - `extra_http_headers`: dict applied via
+          `context.setExtraHTTPHeaders`. Useful for `Authorization:
+          Bearer …` on slot URLs that hit JSON APIs.
+        - `local_storage`: dict of `origin -> {key: value}`. Seeded by
+          an `addInitScript` that runs before every page script, so
+          SPAs that boot from `localStorage[tank-operator-jwt]` come
+          up already signed in.
+
+        Detailed schema validation (sameSite enum, url vs. domain
+        exclusivity, etc.) is delegated to Playwright: its error text
+        is more precise than anything this wrapper can pre-validate
+        and it bubbles up through the subprocess stderr.
         """
         ws_endpoint = _resolve_slot_playwright_ws(
             client, _tank_session_id(tank_session_id)
@@ -649,6 +685,9 @@ def register_tools(
             capture_network=capture_network,
             max_elements=max_elements,
             body_text_limit=body_text_limit,
+            cookies=cookies,
+            extra_http_headers=extra_http_headers,
+            local_storage=local_storage,
         )
 
     @mcp.tool()

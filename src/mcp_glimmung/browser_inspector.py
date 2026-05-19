@@ -40,18 +40,52 @@ def inspect_url(
     capture_network: bool = True,
     max_elements: int = 80,
     body_text_limit: int = 4000,
+    cookies: list[dict[str, Any]] | None = None,
+    extra_http_headers: dict[str, str] | None = None,
+    local_storage: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Inspect a URL via the slot-playwright WebSocket endpoint and return JSON.
 
     `playwright_ws_endpoint` is the slot's `slot-playwright` Service URL, e.g.
     `ws://slot-playwright.<slot-name>.svc.cluster.local:3000`. Callers from the
     MCP tool surface obtain it from the active test-slot lease.
+
+    Auth-injection parameters (`cookies`, `extra_http_headers`,
+    `local_storage`) seed the Playwright `BrowserContext` before `page.goto`
+    so the navigation runs authenticated. The slot-playwright pod itself
+    holds no credentials — every auth identity has to come from the
+    caller (the session pod). Typical tank-operator pattern:
+
+      1. Caller exchanges its projected SA token at
+         `auth.romaine.life/api/auth/exchange/k8s` for a `role=service`
+         JWT.
+      2. Caller POSTs that to the target tank-operator
+         `/api/auth/exchange` to mint an `auth_token` session JWT.
+      3. Caller passes the resulting cookie to this function:
+            cookies=[{
+                "name": "auth_token",
+                "value": "<minted jwt>",
+                "url": "https://tank-operator-slot-1.tank.dev.romaine.life",
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "Lax",
+            }]
+         (Playwright accepts `url=…` as a shortcut for matching
+         `domain`+`path`+`secure`.)
+
+    All three injection params are forwarded as-is to Playwright's
+    `context.addCookies`, `context.setExtraHTTPHeaders`, and an
+    `addInitScript` that seeds `window.localStorage` per origin. Detailed
+    schema validation (`sameSite` enum, `url` vs `domain`+`path`
+    exclusivity, etc.) is left to Playwright — its error text is more
+    precise than anything this wrapper can pre-validate, and it bubbles
+    up through the subprocess stderr.
     """
     if not playwright_ws_endpoint:
         raise ValueError("playwright_ws_endpoint is required")
     width = int((viewport or {}).get("width", 1440))
     height = int((viewport or {}).get("height", 900))
-    payload = {
+    payload: dict[str, Any] = {
         "url": url,
         "playwrightWsEndpoint": playwright_ws_endpoint,
         "viewport": {"width": width, "height": height},
@@ -65,6 +99,28 @@ def inspect_url(
         "maxElements": max_elements,
         "bodyTextLimit": body_text_limit,
     }
+    if cookies is not None:
+        if not isinstance(cookies, list) or any(not isinstance(c, dict) for c in cookies):
+            raise ValueError("cookies must be a list of dicts")
+        payload["cookies"] = cookies
+    if extra_http_headers is not None:
+        if not isinstance(extra_http_headers, dict) or any(
+            not isinstance(k, str) or not isinstance(v, str)
+            for k, v in extra_http_headers.items()
+        ):
+            raise ValueError("extra_http_headers must be a dict of str -> str")
+        payload["extraHttpHeaders"] = extra_http_headers
+    if local_storage is not None:
+        if not isinstance(local_storage, dict) or any(
+            not isinstance(origin, str)
+            or not isinstance(items, dict)
+            or any(not isinstance(k, str) or not isinstance(v, str) for k, v in items.items())
+            for origin, items in local_storage.items()
+        ):
+            raise ValueError(
+                "local_storage must be a dict of origin -> dict of str -> str"
+            )
+        payload["localStorage"] = local_storage
     env = os.environ.copy()
     if "NODE_PATH" not in env:
         node_modules = Path.cwd() / "node_modules"

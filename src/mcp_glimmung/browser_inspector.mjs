@@ -165,6 +165,38 @@ try {
     viewport: input.viewport || { width: 1440, height: 900 },
     ignoreHTTPSErrors: true,
   });
+
+  // Auth-injection plumbing: cookies, extra HTTP headers, and per-origin
+  // localStorage seeds. The slot-playwright pod has no credentials of its
+  // own — every authenticated browse has to come from the caller, which
+  // forwards a session cookie / bearer token / pre-populated storage. See
+  // the inspect_url docstring in browser_inspector.py for the typical
+  // tank-operator auth.romaine.life → /api/auth/exchange flow that
+  // produces these values.
+  if (Array.isArray(input.cookies) && input.cookies.length > 0) {
+    await context.addCookies(input.cookies);
+  }
+  if (input.extraHttpHeaders && typeof input.extraHttpHeaders === "object") {
+    await context.setExtraHTTPHeaders(input.extraHttpHeaders);
+  }
+  if (input.localStorage && typeof input.localStorage === "object") {
+    // Init scripts run on every page before any page script. We seed
+    // localStorage for any origin whose entry matches the current
+    // document. Errors (e.g. opaque-origin sandboxed iframes that
+    // refuse localStorage access) are swallowed: the goal is best-
+    // effort seeding for the top-level navigation, not a guarantee for
+    // every nested context.
+    await context.addInitScript((items) => {
+      try {
+        const here = items && items[window.location.origin];
+        if (!here) return;
+        for (const [k, v] of Object.entries(here)) {
+          try { window.localStorage.setItem(k, v); } catch (_) { /* ignore */ }
+        }
+      } catch (_) { /* ignore */ }
+    }, input.localStorage);
+  }
+
   const page = await context.newPage();
   if (input.captureConsole !== false) {
     page.on("console", (msg) => consoleMessages.push({

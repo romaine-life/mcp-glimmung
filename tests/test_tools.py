@@ -669,7 +669,65 @@ def test_browser_inspector_tool_uses_shared_inspector(monkeypatch) -> None:
         "capture_network": True,
         "max_elements": 80,
         "body_text_limit": 4000,
+        # Auth-injection params default to None so the underlying
+        # inspect_url sees no inject payload unless the MCP caller
+        # asked for one.
+        "cookies": None,
+        "extra_http_headers": None,
+        "local_storage": None,
     }]
+
+
+def test_browser_inspector_tool_forwards_auth_injection(monkeypatch) -> None:
+    tools, client = _registered_tools()
+    calls: list[dict[str, Any]] = []
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "metadata": {
+                    "tank_session_id": "abc123",
+                    "native_slot_name": "tank-operator-slot-1",
+                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                },
+            }
+        ]
+    }
+
+    def fake_inspect_url(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"final_url": kwargs["url"], "elements": []}
+
+    monkeypatch.setattr("mcp_glimmung.tools.inspect_url", fake_inspect_url)
+
+    cookies = [
+        {
+            "name": "auth_token",
+            "value": "fake.jwt.value",
+            "url": "https://tank-operator-slot-1.tank.dev.romaine.life",
+            "httpOnly": True,
+            "secure": True,
+            "sameSite": "Lax",
+        }
+    ]
+    headers = {"X-Test": "ok"}
+    storage = {
+        "https://tank-operator-slot-1.tank.dev.romaine.life": {
+            "tank-operator-jwt": "fake.jwt.value",
+        }
+    }
+
+    tools["inspect_browser_url"](
+        "https://tank-operator-slot-1.tank.dev.romaine.life",
+        tank_session_id="abc123",
+        cookies=cookies,
+        extra_http_headers=headers,
+        local_storage=storage,
+    )
+
+    assert calls[0]["cookies"] == cookies
+    assert calls[0]["extra_http_headers"] == headers
+    assert calls[0]["local_storage"] == storage
 
 
 def test_resume_run_posts_native_step_boundary_payload() -> None:
