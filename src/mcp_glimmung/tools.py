@@ -1340,6 +1340,53 @@ def register_tools(
         return sanitized
 
     @mcp.tool()
+    def extend_test_slot_lease(
+        project: str,
+        tank_session_id: str,
+        extend_seconds: int = 3600,
+        slot_index: int | None = None,
+        slot_name: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Extend the TTL on a checked-out Glimmung native app test slot.
+
+        Use this when the current Tank session still needs its leased test
+        environment. The server updates the durable lease TTL and re-arms the
+        test-slot expiry timer, so the extension survives Glimmung restarts.
+        Pass `tank_session_id` to prove the session owns the checkout. Use
+        `slot_index` or `slot_name` only when the session may hold more than
+        one slot or the target should be explicit."""
+        normalized_tank_session_id = _tank_session_id(tank_session_id)
+        payload: dict[str, Any] = {
+            "project": project,
+            "tank_session_id": normalized_tank_session_id,
+            "extend_seconds": extend_seconds,
+            "source": "mcp-glimmung.extend_test_slot_lease",
+        }
+        if slot_index is not None:
+            payload["slot_index"] = slot_index
+        if slot_name is not None:
+            payload["slot_name"] = slot_name
+        caller_pod_ip = current_caller_pod_ip()
+        if caller_pod_ip:
+            payload["caller_pod_ip"] = caller_pod_ip
+        if reason is not None:
+            payload["reason"] = reason
+        log.info(
+            "mcp tool extend_test_slot_lease project=%s slot_index=%s "
+            "slot_name=%s tank_session_id=%s extend_seconds=%s "
+            "caller_pod_ip=%s reason=%s",
+            project,
+            slot_index,
+            slot_name,
+            normalized_tank_session_id,
+            extend_seconds,
+            caller_pod_ip,
+            reason,
+        )
+        return _hide_lease_id(client.post("/v1/test-slots/extend", json=payload))
+
+    @mcp.tool()
     def create_report(
         project: str,
         repo: str,
