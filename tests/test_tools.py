@@ -1028,6 +1028,34 @@ def test_return_test_slot_posts_return_payload() -> None:
     )
 
 
+def test_extend_test_slot_lease_posts_extend_payload() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["extend_test_slot_lease"](
+        project="glimmung",
+        tank_session_id="session-abc123",
+        extend_seconds=1800,
+        slot_name="glimmung-slot-2",
+        reason="still validating",
+    )
+
+    assert result["path"] == "/v1/test-slots/extend"
+    assert result["json"] == {
+        "project": "glimmung",
+        "tank_session_id": "abc123",
+        "extend_seconds": 1800,
+        "slot_name": "glimmung-slot-2",
+        "reason": "still validating",
+        "source": "mcp-glimmung.extend_test_slot_lease",
+    }
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/test-slots/extend",
+        None,
+        result["json"],
+    )
+
+
 def test_return_test_slot_clears_tank_session_when_requested() -> None:
     mcp = FakeMCP()
     tank = StubTankClient()
