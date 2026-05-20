@@ -235,70 +235,12 @@ def test_project_scoped_issue_and_run_tools_call_human_id_surface() -> None:
     assert "abort_run_by_id" not in tools
 
 
-def test_list_reports_passes_filters_and_defaults_limit() -> None:
+def test_retired_report_tools_are_not_registered() -> None:
     tools, client = _registered_tools()
 
-    tools["list_reports"](
-        project="glimmung",
-        repo="nelsong6/glimmung",
-        state="needs_review",
-        limit=10,
-    )
-
-    assert client.calls[-1] == (
-        "GET",
-        "/v1/reports",
-        {
-            "project": "glimmung",
-            "repo": "nelsong6/glimmung",
-            "state": "needs_review",
-            "limit": 10,
-        },
-        None,
-    )
-
-
-def test_list_reports_plain_call_caps_results() -> None:
-    tools, client = _registered_tools()
-
-    tools["list_reports"]()
-
-    assert client.calls[-1] == ("GET", "/v1/reports", {"limit": 50}, None)
-
-
-def test_create_pr_posts_registration_payload() -> None:
-    tools, client = _registered_tools()
-
-    result = tools["create_report"](
-        project="glimmung",
-        repo="nelsong6/glimmung",
-        number=123,
-        title="MCP parity",
-        branch="codex/mcp-parity",
-        linked_issue_ref="glimmung#123",
-        linked_run_ref="glimmung#123/runs/1",
-    )
-
-    assert result["path"] == "/v1/reports"
-    assert result["json"] == {
-        "project": "glimmung",
-        "repo": "nelsong6/glimmung",
-        "number": 123,
-        "title": "MCP parity",
-        "branch": "codex/mcp-parity",
-        "body": "",
-        "base_ref": "main",
-        "head_sha": "",
-        "html_url": "",
-        "linked_issue_ref": "glimmung#123",
-        "linked_run_ref": "glimmung#123/runs/1",
-    }
-    assert client.calls[-1] == ("POST", "/v1/reports", None, result["json"])
-
-
-def test_raw_id_report_tools_are_not_registered() -> None:
-    tools, client = _registered_tools()
-
+    assert "get_report" not in tools
+    assert "list_reports" not in tools
+    assert "create_report" not in tools
     assert "get_report_by_id" not in tools
     assert "list_report_versions" not in tools
     assert "get_report_version" not in tools
