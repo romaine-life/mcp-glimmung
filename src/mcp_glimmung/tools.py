@@ -260,41 +260,6 @@ def register_tools(
         )
 
     @mcp.tool()
-    def get_report(repo_owner: str, repo_name: str, pr_number: int) -> dict[str, Any]:
-        """Get a Glimmung report by GitHub repository owner/name and pull request (PR) number.
-
-        Use to inspect PR-backed report state, linked issue/run ids, branch,
-        merge state, and report metadata.
-        """
-        return client.get(f"/v1/reports/{repo_owner}/{repo_name}/{pr_number}")
-
-    @mcp.tool()
-    def list_reports(
-        project: str | None = None,
-        repo: str | None = None,
-        state: str | None = None,
-        limit: int | None = 50,
-    ) -> list[dict[str, Any]]:
-        """List Glimmung reports across projects, optionally filtered.
-
-        Use to find reports associated with GitHub pull requests, branches,
-        issues, or runs. `project` filters by Glimmung project name, `repo`
-        filters by GitHub owner/name, `state` filters by report state
-        (ready, needs_review, failed, closed, merged), and `limit` caps
-        returned rows.
-        """
-        params = {
-            "project": project,
-            "repo": repo,
-            "state": state,
-            "limit": limit,
-        }
-        return client.get(
-            "/v1/reports",
-            params={k: v for k, v in params.items() if v is not None},
-        )
-
-    @mcp.tool()
     def get_state() -> dict[str, Any]:
         """Get Glimmung control-plane state: hosts, leases, locks, and recent runs.
 
@@ -1385,40 +1350,3 @@ def register_tools(
             reason,
         )
         return _hide_lease_id(client.post("/v1/test-slots/extend", json=payload))
-
-    @mcp.tool()
-    def create_report(
-        project: str,
-        repo: str,
-        number: int,
-        title: str,
-        branch: str,
-        body: str = "",
-        base_ref: str = "main",
-        head_sha: str = "",
-        html_url: str = "",
-        linked_issue_ref: str | None = None,
-        linked_run_ref: str | None = None,
-    ) -> dict[str, Any]:
-        """Create or register a Glimmung report for an existing GitHub pull request (PR).
-
-        Use after creating a GitHub PR to link the PR back to Glimmung issue/run
-        state. Idempotent on `(repo, number)` and can attach public
-        `linked_issue_ref` / `linked_run_ref` values during either create or
-        re-registration."""
-        payload: dict[str, Any] = {
-            "project": project,
-            "repo": repo,
-            "number": number,
-            "title": title,
-            "branch": branch,
-            "body": body,
-            "base_ref": base_ref,
-            "head_sha": head_sha,
-            "html_url": html_url,
-        }
-        if linked_issue_ref is not None:
-            payload["linked_issue_ref"] = linked_issue_ref
-        if linked_run_ref is not None:
-            payload["linked_run_ref"] = linked_run_ref
-        return client.post("/v1/reports", json=payload)
