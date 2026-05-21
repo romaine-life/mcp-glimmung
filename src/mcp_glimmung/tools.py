@@ -105,6 +105,115 @@ def _result_lease_label(result: dict[str, Any]) -> str:
     return "claimed"
 
 
+def _run_display(value: int | str) -> str:
+    display = str(value).strip()
+    if not display:
+        raise ValueError("run_number required")
+    return display
+
+
+def _as_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _lease_metadata(lease: dict[str, Any]) -> dict[str, Any]:
+    metadata = lease.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _lease_slot_name(lease: dict[str, Any]) -> str | None:
+    metadata = _lease_metadata(lease)
+    value = (
+        lease.get("slot_name")
+        or lease.get("native_slot_name")
+        or metadata.get("slot_name")
+        or metadata.get("native_slot_name")
+    )
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _lease_slot_index(lease: dict[str, Any]) -> int | None:
+    metadata = _lease_metadata(lease)
+    for value in (
+        lease.get("slot_index"),
+        lease.get("native_slot_index"),
+        metadata.get("slot_index"),
+        metadata.get("native_slot_index"),
+    ):
+        parsed = _as_positive_int(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _hot_swap_selector_problem(
+    project: str,
+    slot_name: str | None,
+    slot_index: int | None,
+) -> dict[str, Any] | None:
+    has_name = isinstance(slot_name, str) and bool(slot_name.strip())
+    has_index = slot_index is not None
+    if has_name == has_index:
+        return {
+            "state": "slot_selector_invalid",
+            "project": project,
+            "slot_name": slot_name,
+            "slot_index": slot_index,
+            "detail": "pass exactly one of slot_name or slot_index",
+        }
+    return None
+
+
+def _active_hot_swap_lease_problem(
+    client: GlimmungClient,
+    project: str,
+    slot_name: str | None,
+    slot_index: int | None,
+) -> dict[str, Any] | None:
+    selector_problem = _hot_swap_selector_problem(project, slot_name, slot_index)
+    if selector_problem is not None:
+        return selector_problem
+
+    state = client.get("/v1/state")
+    active = state.get("active_leases") if isinstance(state, dict) else []
+    for lease in active or []:
+        if not isinstance(lease, dict):
+            continue
+        if lease.get("project") != project:
+            continue
+        metadata = _lease_metadata(lease)
+        if metadata.get("test_slot_checkout") is False:
+            continue
+        if slot_name is not None and _lease_slot_name(lease) == slot_name:
+            return None
+        if slot_index is not None and _lease_slot_index(lease) == slot_index:
+            return None
+
+    return {
+        "state": "no_active_test_slot_lease",
+        "project": project,
+        "slot_name": slot_name,
+        "slot_index": slot_index,
+        "detail": (
+            "no active test-slot lease matches this project and slot; "
+            "call checkout_test_slot before applying or recording a hot swap"
+        ),
+    }
+
+
 def _resolve_slot_playwright_ws(client: GlimmungClient, tank_session_id: str) -> str:
     """Find the active test-slot lease for a Tank session and return its
     slot-playwright Service ws endpoint.
@@ -200,12 +309,13 @@ def register_tools(
         return client.get(f"/v1/issues/by-number/{project}/{issue_number}/graph")
 
     @mcp.tool()
-    def get_run_report(project: str, issue_number: int, run_number: int) -> dict[str, Any]:
-        """Get one RunReport by issue-scoped run number.
+    def get_run_report(project: str, issue_number: int, run_number: str) -> dict[str, Any]:
+        """Get one RunReport by issue-scoped run display number.
 
-        Use this for normal operator work: "run 1 for glimmung#141" maps to
-        `project="glimmung", issue_number=141, run_number=1`.
+        Use this for normal operator work: "run 1.3 for glimmung#141"
+        maps to `project="glimmung", issue_number=141, run_number="1.3"`.
         """
+        run_number = _run_display(run_number)
         return client.get(
             f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/report",
         )
@@ -214,7 +324,7 @@ def register_tools(
     def get_native_run_events(
         project: str,
         issue_number: int,
-        run_number: int,
+        run_number: str,
         attempt_index: int | None = None,
         job_id: str | None = None,
         limit: int | None = 200,
@@ -232,6 +342,7 @@ def register_tools(
             "job_id": job_id,
             "limit": limit,
         }
+        run_number = _run_display(run_number)
         return client.get(
             f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/native/events",
             params={k: v for k, v in params.items() if v is not None},
@@ -408,7 +519,15 @@ def register_tools(
         Use after a static or backend hot swap so later operators can inspect
         recent build/copy/restart/health details from the lease metadata. Pass
         `lease_ref`, or identify the active checkout with `slot_name` or
-        `slot_index`."""
+        `slot_index`.
+
+        When a slot selector is used and no active checkout exists, this
+        returns `state: no_active_test_slot_lease` instead of surfacing the
+        Glimmung API's generic 404."""
+        if not lease_ref:
+            problem = _active_hot_swap_lease_problem(client, project, slot_name, slot_index)
+            if problem is not None:
+                return problem
         payload: dict[str, Any] = {
             "project": project,
             "entry": {
@@ -473,6 +592,10 @@ def register_tools(
         See docs/test-slot-hot-swap.md in nelsong6/glimmung for the workflow
         contract and the contract shape projects need to declare.
         """
+        problem = _active_hot_swap_lease_problem(client, project, slot_name, slot_index)
+        if problem is not None:
+            return problem
+
         payload: dict[str, Any] = {
             "project": project,
             "artifact_kind": artifact_kind,
@@ -997,7 +1120,7 @@ def register_tools(
     def replay_run_decision(
         project: str,
         issue_number: int,
-        run_number: int,
+        run_number: str,
         synthetic_completion: dict[str, Any],
         override_workflow: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -1022,9 +1145,11 @@ def register_tools(
         phase_outputs: dict|null}`. Copy-paste a real completion and tweak
         fields to ask "what if?".
 
-        `override_workflow` is optional. When set, the replay uses the
-        provided shape instead of the live registration — useful for
-        previewing a registration fix before applying it. Shape:
+        `run_number` is the issue-scoped run display number, so retry cycles
+        like "14.3" are addressable. `override_workflow` is optional. When
+        set, the replay uses the provided shape instead of the live
+        registration — useful for previewing a registration fix before
+        applying it. Shape:
         `{phases: [...PhaseSpec...], pr: {...}, budget: {...}}`. Cross-
         phase input refs are validated; a typo in
         `${{ phases.X.outputs.Y }}` 422s with the same error
@@ -1036,6 +1161,7 @@ def register_tools(
         attempts_in_phase_after, workflow_source}`. `workflow_source` is
         "registered" or "override" so the verdict's basis is unambiguous.
         """
+        run_number = _run_display(run_number)
         payload: dict[str, Any] = {"synthetic_completion": synthetic_completion}
         if override_workflow is not None:
             payload["override_workflow"] = override_workflow
@@ -1048,7 +1174,7 @@ def register_tools(
     def resume_run(
         project: str,
         issue_number: int,
-        run_number: int,
+        run_number: str,
         entrypoint_phase: str,
         entrypoint_job_id: str | None = None,
         entrypoint_step_slug: str | None = None,
@@ -1098,6 +1224,7 @@ def register_tools(
         `prior_missing`, `workflow_missing`. The HTTP layer maps the
         validation states to 4xx; happy paths return state in the body.
         """
+        run_number = _run_display(run_number)
         ts: dict[str, Any] = {
             "kind": "resume_via_mcp",
             "resumed_from_issue_number": issue_number,
@@ -1129,20 +1256,21 @@ def register_tools(
     def abort_run(
         project: str,
         issue_number: int,
-        run_number: int,
+        run_number: str,
         reason: str = "aborted_via_mcp",
     ) -> dict[str, Any]:
-        """Abort a Glimmung run by issue-scoped run number.
+        """Abort a Glimmung run by issue-scoped run display number.
 
         Use for orphaned, stuck, or intentionally cancelled runs. Flips a Run
         from in_progress to aborted and releases any locks it was holding.
         Use when a Run has no lease or workflow_run_id and `cancel_lease`
-        can't grip onto it.
+        can't grip onto it. Pass retry cycles as strings, e.g. `run_number="14.3"`.
 
         Idempotent — calling twice returns `state: already_terminal` the
         second time. If the Run has a workflow_run_id, a GH cancel is
         POSTed best-effort; `gh_run_cancelled` records the outcome
         (`None` if no GH dispatch was attempted)."""
+        run_number = _run_display(run_number)
         return client.post(
             f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/abort",
             params={"reason": reason},

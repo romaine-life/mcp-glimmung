@@ -96,6 +96,26 @@ def _registered_tools() -> tuple[dict[str, Any], StubClient]:
     return mcp.tools, client
 
 
+def _state_with_active_slot(
+    project: str = "tank-operator",
+    slot_name: str = "tank-operator-slot-1",
+    slot_index: int = 1,
+) -> dict[str, Any]:
+    return {
+        "active_leases": [
+            {
+                "project": project,
+                "state": "claimed",
+                "metadata": {
+                    "test_slot_checkout": True,
+                    "native_slot_name": slot_name,
+                    "native_slot_index": str(slot_index),
+                },
+            }
+        ]
+    }
+
+
 def test_create_issue_posts_native_issue_payload() -> None:
     tools, client = _registered_tools()
 
@@ -222,15 +242,15 @@ def test_project_scoped_issue_and_run_tools_call_human_id_surface() -> None:
 
     issue = tools["get_issue_by_number"](project="glimmung", issue_number=141)
     graph = tools["get_issue_graph_by_number"](project="glimmung", issue_number=141)
-    report = tools["get_run_report"](project="glimmung", issue_number=141, run_number=1)
+    report = tools["get_run_report"](project="glimmung", issue_number=141, run_number="1.2")
     abort = tools["abort_run"](
-        project="glimmung", issue_number=141, run_number=1, reason="stuck",
+        project="glimmung", issue_number=141, run_number="1.2", reason="stuck",
     )
 
     assert issue["path"] == "/v1/issues/by-number/glimmung/141"
     assert graph["path"] == "/v1/issues/by-number/glimmung/141/graph"
-    assert report["path"] == "/v1/projects/glimmung/issues/141/runs/1/report"
-    assert abort["path"] == "/v1/projects/glimmung/issues/141/runs/1/abort"
+    assert report["path"] == "/v1/projects/glimmung/issues/141/runs/1.2/report"
+    assert abort["path"] == "/v1/projects/glimmung/issues/141/runs/1.2/abort"
     assert abort["params"] == {"reason": "stuck"}
     assert "abort_run_by_id" not in tools
 
@@ -439,6 +459,10 @@ def test_get_test_slot_hot_swap_contract_reads_project_metadata() -> None:
 
 def test_record_test_slot_hot_swap_posts_history() -> None:
     tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = _state_with_active_slot(
+        slot_name="tank-slot-1",
+        slot_index=1,
+    )
 
     result = tools["record_test_slot_hot_swap"](
         project="tank-operator",
@@ -463,8 +487,23 @@ def test_record_test_slot_hot_swap_posts_history() -> None:
     }
 
 
+def test_record_test_slot_hot_swap_returns_diagnostic_without_active_lease() -> None:
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {"active_leases": []}
+
+    result = tools["record_test_slot_hot_swap"](
+        project="tank-operator",
+        slot_index=1,
+        status="ok",
+    )
+
+    assert result["state"] == "no_active_test_slot_lease"
+    assert client.calls == [("GET", "/v1/state", None, None)]
+
+
 def test_apply_test_slot_hot_swap_posts_minimal() -> None:
-    tools, _ = _registered_tools()
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = _state_with_active_slot()
 
     result = tools["apply_test_slot_hot_swap"](
         project="tank-operator",
@@ -483,7 +522,8 @@ def test_apply_test_slot_hot_swap_posts_minimal() -> None:
 
 
 def test_apply_test_slot_hot_swap_passes_timeout_and_slot_index() -> None:
-    tools, _ = _registered_tools()
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = _state_with_active_slot(slot_index=2)
 
     result = tools["apply_test_slot_hot_swap"](
         project="tank-operator",
@@ -503,22 +543,32 @@ def test_apply_test_slot_hot_swap_passes_timeout_and_slot_index() -> None:
     }
 
 
-def test_apply_test_slot_hot_swap_omits_unset_optionals() -> None:
-    tools, _ = _registered_tools()
+def test_apply_test_slot_hot_swap_requires_one_slot_selector() -> None:
+    tools, client = _registered_tools()
 
-    # Caller specifies neither slot_index nor slot_name (the endpoint will
-    # reject this; the wrapper just passes through what it was given).
     result = tools["apply_test_slot_hot_swap"](
         project="tank-operator",
         artifact_kind="agent_runner",
         git_ref="main",
     )
 
-    assert result["json"] == {
-        "project": "tank-operator",
-        "artifact_kind": "agent_runner",
-        "git_ref": "main",
-    }
+    assert result["state"] == "slot_selector_invalid"
+    assert client.calls == []
+
+
+def test_apply_test_slot_hot_swap_returns_diagnostic_without_active_lease() -> None:
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {"active_leases": []}
+
+    result = tools["apply_test_slot_hot_swap"](
+        project="tank-operator",
+        artifact_kind="agent_runner",
+        git_ref="main",
+        slot_index=1,
+    )
+
+    assert result["state"] == "no_active_test_slot_lease"
+    assert client.calls == [("GET", "/v1/state", None, None)]
 
 
 def test_playbook_tools_call_http_surface() -> None:
@@ -699,7 +749,7 @@ def test_resume_run_posts_native_step_boundary_payload() -> None:
         "trigger_source": {
             "kind": "resume_via_mcp",
             "resumed_from_issue_number": 141,
-            "resumed_from_run_number": 1,
+            "resumed_from_run_number": "1",
             "actor": "codex",
         },
     }
