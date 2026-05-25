@@ -1433,6 +1433,25 @@ def register_tools(
         return sanitized
 
     @mcp.tool()
+    def repair_test_slot(project: str, slot_name: str) -> dict[str, Any]:
+        """Repair/revalidate one configured, unleased Glimmung native test slot.
+
+        Use this for admin repair of prepared capacity when a configured slot
+        is missing preliminary resources or has a preliminary provisioning
+        error. The server rejects active leased/runtime slots, marks the slot
+        `provisioning`, reruns preliminary reconciliation and the warm Helm
+        pass only, then returns the slot to `provisioned` or records `error`.
+        This does not change queue size and does not activate hot runtime."""
+        log.info(
+            "mcp tool repair_test_slot project=%s slot_name=%s",
+            project,
+            slot_name,
+        )
+        return _hide_lease_id(
+            client.post(f"/v1/projects/{project}/test-environments/{slot_name}/repair")
+        )
+
+    @mcp.tool()
     def extend_test_slot_lease(
         project: str,
         tank_session_id: str,

@@ -1020,6 +1020,32 @@ def test_return_test_slot_posts_return_payload() -> None:
     )
 
 
+def test_repair_test_slot_posts_project_slot_repair() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["repair_test_slot"](
+        project="ambience",
+        slot_name="ambience-slot-2",
+    )
+
+    assert result["path"] == "/v1/projects/ambience/test-environments/ambience-slot-2/repair"
+    assert result["json"] is None
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/projects/ambience/test-environments/ambience-slot-2/repair",
+        None,
+        None,
+    )
+
+
+def test_repair_test_slot_requires_slot_name() -> None:
+    tools, _client = _registered_tools()
+
+    signature = inspect.signature(tools["repair_test_slot"])
+
+    assert list(signature.parameters) == ["project", "slot_name"]
+
+
 def test_extend_test_slot_lease_posts_extend_payload() -> None:
     tools, client = _registered_tools()
 

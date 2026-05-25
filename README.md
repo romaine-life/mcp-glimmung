@@ -18,11 +18,17 @@ the project and Tank session identity, and Glimmung returns the assigned slot.
 `extend_test_slot_lease` wraps `POST /v1/test-slots/extend`; it requires the
 Tank session identity so a session can renew its own active checkout without
 returning and tearing down the slot namespace.
+`repair_test_slot` wraps
+`POST /v1/projects/{project}/test-environments/{slot_name}/repair` for
+admin revalidation of one configured, unleased slot. It does not change queue
+size, choose a slot, or activate hot runtime.
 
 The checkout tool must not expose or forward caller-owned slot selection or
 cleanup fields such as `slot_index`, `mode`, or `phase_inputs`. Those fields
 are rejected by the Glimmung API. Queue size changes own destructive capacity
 changes, and `return_test_slot` owns lease-scoped runtime cleanup.
+Repair is a preliminary-capacity revalidation path; it is not a cleanup or
+reset path for active leases.
 
 Checkout may return while activation is still running. When the response has
 `state: "activating"` and `usable: false`, callers should poll the returned
