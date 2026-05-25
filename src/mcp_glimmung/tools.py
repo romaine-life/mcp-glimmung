@@ -551,6 +551,7 @@ def register_tools(
         project: str,
         artifact_kind: str,
         git_ref: str,
+        validation_target: str,
         slot_index: int | None = None,
         slot_name: str | None = None,
         timeout_seconds: int | None = None,
@@ -559,9 +560,10 @@ def register_tools(
 
         End-to-end developer dev loop, sync UX: this one call blocks until the
         dispatched Kubernetes Job completes (clones the repo at git_ref, runs
-        the contract's build_command in the contract's builder_image, kubectl-
-        streams the artifact into the target session pod, sends the configured
-        restart signal). Then returns a structured result.
+        any project-owned fidelity classifier, runs the contract's build_command
+        in the contract's builder_image, kubectl-streams the artifact into the
+        target session pod, sends the configured restart signal). Then returns a
+        structured result.
 
         The previous workflow (per the /test agent skill) was a manual dance
         of `kubectl cp` + `kubectl exec` + `kill -HUP 1`. This tool replaces
@@ -570,9 +572,15 @@ def register_tools(
         Args:
             project: Glimmung project name (e.g., "tank-operator").
             artifact_kind: Which contract sub-block applies. v1 supports
-                "agent_runner" only; static and backend continue to use the
-                glimmung-agent CLI path until their consumers opt in.
+                "agent_runner" and "codex_runner"; static and backend continue
+                to use the glimmung-agent CLI path until their consumers opt in.
             git_ref: Branch or tag to clone. Pushed beforehand.
+            validation_target: What the hot-swap result is meant to prove.
+                Use "existing_session" for already-running target pods,
+                "new_session" when you will create a fresh session after the
+                change, or "full_runtime" for rollout-equivalent evidence.
+                Projects with fidelity_classifier enabled reject omitted or
+                incompatible targets.
             slot_index or slot_name: Identifies the active test-slot lease.
                 Exactly one of the two should be set.
             timeout_seconds: Server-side bound. Clamped to [1, 600]. Default
@@ -600,6 +608,7 @@ def register_tools(
             "project": project,
             "artifact_kind": artifact_kind,
             "git_ref": git_ref,
+            "validation_target": validation_target,
         }
         if slot_name:
             payload["slot_name"] = slot_name

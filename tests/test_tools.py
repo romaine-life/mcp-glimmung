@@ -509,6 +509,7 @@ def test_apply_test_slot_hot_swap_posts_minimal() -> None:
         project="tank-operator",
         artifact_kind="agent_runner",
         git_ref="feat/durable-stop-request",
+        validation_target="existing_session",
         slot_name="tank-operator-slot-1",
     )
 
@@ -517,6 +518,7 @@ def test_apply_test_slot_hot_swap_posts_minimal() -> None:
         "project": "tank-operator",
         "artifact_kind": "agent_runner",
         "git_ref": "feat/durable-stop-request",
+        "validation_target": "existing_session",
         "slot_name": "tank-operator-slot-1",
     }
 
@@ -529,6 +531,7 @@ def test_apply_test_slot_hot_swap_passes_timeout_and_slot_index() -> None:
         project="tank-operator",
         artifact_kind="agent_runner",
         git_ref="main",
+        validation_target="full_runtime",
         slot_index=2,
         timeout_seconds=300,
     )
@@ -538,6 +541,7 @@ def test_apply_test_slot_hot_swap_passes_timeout_and_slot_index() -> None:
         "project": "tank-operator",
         "artifact_kind": "agent_runner",
         "git_ref": "main",
+        "validation_target": "full_runtime",
         "slot_index": 2,
         "timeout_seconds": 300,
     }
@@ -550,6 +554,7 @@ def test_apply_test_slot_hot_swap_requires_one_slot_selector() -> None:
         project="tank-operator",
         artifact_kind="agent_runner",
         git_ref="main",
+        validation_target="existing_session",
     )
 
     assert result["state"] == "slot_selector_invalid"
@@ -564,6 +569,7 @@ def test_apply_test_slot_hot_swap_returns_diagnostic_without_active_lease() -> N
         project="tank-operator",
         artifact_kind="agent_runner",
         git_ref="main",
+        validation_target="new_session",
         slot_index=1,
     )
 
