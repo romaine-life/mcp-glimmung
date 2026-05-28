@@ -4,6 +4,7 @@ Read surface plus session-safe mutations. Lease and webhook endpoints stay
 unexposed — those are runner / orchestrator concerns, not session concerns.
 """
 
+import json
 import logging
 import os
 from typing import Any
@@ -11,7 +12,11 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from .browser_inspector import inspect_url
+from .browser_inspector import (
+    fresh_inspection_request_id,
+    inspect_url,
+    summary_view,
+)
 from .caller import current_caller_pod_ip
 from .glimmung_client import GlimmungClient
 from .tank_client import TankClient
@@ -216,7 +221,16 @@ def _active_hot_swap_lease_problem(
 
 def _resolve_slot_playwright_ws(client: GlimmungClient, tank_session_id: str) -> str:
     """Find the active test-slot lease for a Tank session and return its
-    slot-playwright Service ws endpoint.
+    slot-playwright Service ws endpoint."""
+    endpoint, _project = _resolve_slot_playwright_ws_and_project(client, tank_session_id)
+    return endpoint
+
+
+def _resolve_slot_playwright_ws_and_project(
+    client: GlimmungClient, tank_session_id: str
+) -> tuple[str, str]:
+    """Find the active test-slot lease for a Tank session and return both
+    its slot-playwright Service ws endpoint and the lease's project.
 
     Errors if the session does not currently hold an active test-slot lease,
     or if the lease's slot does not yet expose a playwright endpoint
@@ -268,8 +282,11 @@ def _resolve_slot_playwright_ws(client: GlimmungClient, tank_session_id: str) ->
             lease.get("playwright_ws_endpoint")
             or metadata.get("playwright_ws_endpoint")
         )
+        project = lease.get("project") or metadata.get("project") or ""
+        if not isinstance(project, str):
+            project = ""
         if isinstance(endpoint, str) and endpoint:
-            return endpoint
+            return endpoint, project
         raise RuntimeError(
             f"test slot for tank session {tank_session_id!r} has no "
             "playwright_ws_endpoint yet; slot may still be activating or "
@@ -708,30 +725,46 @@ def register_tools(
         viewport: dict[str, int] | None = None,
         wait_ms: int = 2000,
         timeout_ms: int = 30000,
-        screenshot: bool = True,
         full_page: bool = True,
         capture_accessibility: bool = False,
         capture_console: bool = True,
         capture_network: bool = True,
         max_elements: int = 80,
         body_text_limit: int = 4000,
+        max_console_messages: int = 50,
+        max_network_events: int = 50,
         cookies: list[dict[str, Any]] | None = None,
         extra_http_headers: dict[str, str] | None = None,
         local_storage: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
-        """Inspect a live URL with Chromium and return browser-state JSON.
+        """Inspect a live URL with Chromium and return a summary plus
+        durable artifact URLs.
 
         Runs inside the active test slot's `slot-playwright` pod, so callers
-        must hold a checked-out test slot via `checkout_test_slot` first. The
-        slot's Playwright drives the browser; the MCP host does not. Pass the
-        Tank session id whose lease should be used.
+        must hold a checked-out test slot via `checkout_test_slot` first.
+        The slot's Playwright drives the browser; the MCP host does not.
+        Pass the Tank session id whose lease should be used.
 
-        Use for validation URLs when a static screenshot is not enough: the
-        tool waits for the rendered page, captures final URL/status,
-        title/body summary, interesting DOM elements with selectors and
-        bounds, console/page errors, failed requests and HTTP >= 400
-        responses, optional accessibility tree, an inline `screenshot_base64`
-        PNG, and canvas nonblank sampling data.
+        The screenshot PNG and the full structured inspection report are
+        uploaded to glimmung via `POST /v1/inspections` and live under
+        `inspections/<lease_id>/<inspection_id>/{report.json, screenshot.png}`.
+        The tool response is a compact summary that references those
+        artifacts plus a bounded preview of the body text, elements list,
+        console messages, page errors, and network errors. The full lists
+        always live in `report.json` — no data is silently dropped on the
+        server side.
+
+        `body_text_limit`, `max_elements`, `max_console_messages`, and
+        `max_network_events` control the *summary* size only. The full
+        report is unbounded by these parameters.
+
+        Retention: V1 inspections are lease-scoped — both blobs and the
+        `slot_inspections` ledger row are deleted at lease cleanup
+        (return, callback release, TTL expiry, admin cancel). For
+        durable evidence, attach the artifact URL through the existing
+        run/touchpoint evidence machinery; the `pr_touchpoint` finalize
+        step canonicalizes `inspections/` refs into Touchpoint evidence
+        without any new caller-facing promotion API.
 
         Auth-injection parameters drive an *authenticated* browse — the
         slot-playwright pod holds no credentials of its own, so the
@@ -766,16 +799,14 @@ def register_tools(
         is more precise than anything this wrapper can pre-validate
         and it bubbles up through the subprocess stderr.
         """
-        ws_endpoint = _resolve_slot_playwright_ws(
-            client, _tank_session_id(tank_session_id)
-        )
-        return inspect_url(
+        session_id = _tank_session_id(tank_session_id)
+        ws_endpoint, project = _resolve_slot_playwright_ws_and_project(client, session_id)
+        report = inspect_url(
             url=url,
             playwright_ws_endpoint=ws_endpoint,
             viewport=viewport,
             wait_ms=wait_ms,
             timeout_ms=timeout_ms,
-            screenshot=screenshot,
             full_page=full_page,
             capture_accessibility=capture_accessibility,
             capture_console=capture_console,
@@ -785,6 +816,55 @@ def register_tools(
             cookies=cookies,
             extra_http_headers=extra_http_headers,
             local_storage=local_storage,
+        )
+        screenshot_path = report.pop("screenshot_path", None)
+        if not screenshot_path:
+            raise RuntimeError(
+                "browser_inspector did not return a screenshot_path; "
+                "MJS subprocess shape regressed"
+            )
+        try:
+            with open(screenshot_path, "rb") as fh:
+                screenshot_bytes = fh.read()
+            if not screenshot_bytes:
+                raise RuntimeError("screenshot tempfile is empty")
+            request_id = fresh_inspection_request_id()
+            response = client.post_multipart(
+                "/v1/inspections",
+                data={
+                    "tank_session_id": session_id,
+                    "project": project,
+                },
+                files={
+                    "report": (
+                        "report.json",
+                        json.dumps(report).encode("utf-8"),
+                        "application/json",
+                    ),
+                    "screenshot": (
+                        "screenshot.png",
+                        screenshot_bytes,
+                        "image/png",
+                    ),
+                },
+                extra_headers={"X-Inspection-Request-Id": request_id},
+            )
+        finally:
+            try:
+                os.unlink(screenshot_path)
+            except FileNotFoundError:
+                pass
+        return summary_view(
+            report,
+            inspection_id=str(response.get("inspection_id") or ""),
+            report_url=str(response.get("report_url") or ""),
+            screenshot_url=str(response.get("screenshot_url") or ""),
+            scope=str(response.get("scope") or ""),
+            scope_ref=str(response.get("scope_ref") or ""),
+            body_text_limit=body_text_limit,
+            max_elements=max_elements,
+            max_console_messages=max_console_messages,
+            max_network_events=max_network_events,
         )
 
     @mcp.tool()

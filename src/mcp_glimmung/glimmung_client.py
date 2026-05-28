@@ -67,3 +67,33 @@ class GlimmungClient:
         )
         r.raise_for_status()
         return r.json()
+
+    def post_multipart(
+        self,
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> Any:
+        """POST a multipart/form-data request to glimmung.
+
+        ``files`` is the same shape `httpx` accepts: a dict of
+        ``part_name -> (filename, bytes, content_type)``. ``data`` is the
+        plain form fields. ``extra_headers`` layers on top of the standard
+        auth header so the caller can ship custom headers such as
+        ``X-Inspection-Request-Id`` without re-implementing the auth
+        plumbing.
+        """
+        headers = self._headers()
+        if extra_headers:
+            for k, v in extra_headers.items():
+                headers[k] = v
+        r = self._http.post(
+            self._base_url + path,
+            data=data,
+            files=files,
+            headers=headers,
+        )
+        r.raise_for_status()
+        return r.json()
