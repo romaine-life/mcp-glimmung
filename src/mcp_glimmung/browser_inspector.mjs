@@ -246,10 +246,30 @@ try {
     bodyText = "";
   }
 
-  let screenshotBase64 = null;
-  if (input.screenshot) {
-    const buf = await page.screenshot({ fullPage: input.fullPage !== false });
-    screenshotBase64 = buf.toString("base64");
+  let screenshotPath = null;
+  let screenshotBytes = 0;
+  if (typeof input.screenshotPath !== "string" || input.screenshotPath.length === 0) {
+    throw new Error(
+      "screenshotPath is required: the Python wrapper owns the tempfile lifecycle "
+      + "and the screenshot is uploaded to glimmung as a durable artifact instead "
+      + "of round-tripped through stdout as base64.",
+    );
+  }
+  const fs = await import("node:fs/promises");
+  const buf = await page.screenshot({
+    path: input.screenshotPath,
+    fullPage: input.fullPage !== false,
+  });
+  screenshotPath = input.screenshotPath;
+  screenshotBytes = buf.length;
+  // Belt-and-braces: confirm the tempfile got the bytes Chromium just emitted.
+  // Playwright writes via stream when `path` is given, but the path side and
+  // the buffer return should agree in size.
+  const stat = await fs.stat(screenshotPath);
+  if (stat.size !== screenshotBytes) {
+    throw new Error(
+      `screenshot tempfile size=${stat.size} disagrees with chromium buffer size=${screenshotBytes}`,
+    );
   }
 
   let accessibility = null;
@@ -276,7 +296,8 @@ try {
     failed_requests: failedRequests,
     http_errors: httpErrors,
     accessibility,
-    screenshot_base64: screenshotBase64,
+    screenshot_path: screenshotPath,
+    screenshot_size_bytes: screenshotBytes,
     canvas: await page.evaluate(canvasStats()),
     inspected_at: startedAt.toISOString(),
   };

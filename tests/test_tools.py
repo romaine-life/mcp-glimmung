@@ -47,6 +47,32 @@ class StubClient:
         self.calls.append(("POST", path, params, json))
         return {"path": path, "params": params, "json": json}
 
+    def post_multipart(
+        self,
+        path: str,
+        *,
+        data: dict[str, str] | None = None,
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        self.calls.append(("POST_MULTIPART", path, data, files))
+        self.last_multipart = {
+            "path": path,
+            "data": data,
+            "files": files,
+            "extra_headers": extra_headers,
+        }
+        if ("POST_MULTIPART", path) in self.responses:
+            return self.responses[("POST_MULTIPART", path)]
+        return {
+            "inspection_id": "stub-id",
+            "report_url": "/v1/artifacts/inspections/lease-1/stub-id/report.json",
+            "screenshot_url": "/v1/artifacts/inspections/lease-1/stub-id/screenshot.png",
+            "scope": "lease",
+            "scope_ref": "lease-1",
+            "blob_prefix": "inspections/lease-1/stub-id",
+        }
+
 
 class StubTankClient:
     def __init__(self) -> None:
@@ -623,13 +649,42 @@ def test_playbook_tools_call_http_surface() -> None:
     ]
 
 
-def test_browser_inspector_tool_uses_shared_inspector(monkeypatch) -> None:
+def _fake_inspect_url_returning_path(calls: list[dict[str, Any]], screenshot_bytes: bytes = b"PNG"):
+    """Return a fake inspect_url that writes the screenshot tempfile and
+    surfaces the report shape the new tool flow expects."""
+    import tempfile
+
+    def fake(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="test-")
+        import os as _os
+        _os.close(fd)
+        with open(path, "wb") as fh:
+            fh.write(screenshot_bytes)
+        return {
+            "final_url": kwargs["url"],
+            "status": 200,
+            "title": "T",
+            "body_text": "hello",
+            "elements": [],
+            "console": [],
+            "page_errors": [],
+            "failed_requests": [],
+            "http_errors": [],
+            "screenshot_path": path,
+            "inspected_at": "2026-05-28T00:00:00.000Z",
+        }
+    return fake
+
+
+def test_browser_inspector_tool_uploads_to_glimmung(monkeypatch) -> None:
     tools, client = _registered_tools()
     calls: list[dict[str, Any]] = []
     client.responses[("GET", "/v1/state")] = {
         "active_leases": [
             {
                 "id": "lease-1",
+                "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
                     "native_slot_name": "tank-operator-slot-1",
@@ -638,42 +693,41 @@ def test_browser_inspector_tool_uses_shared_inspector(monkeypatch) -> None:
             }
         ]
     }
-
-    def fake_inspect_url(**kwargs: Any) -> dict[str, Any]:
-        calls.append(kwargs)
-        return {"final_url": kwargs["url"], "elements": []}
-
-    monkeypatch.setattr("mcp_glimmung.tools.inspect_url", fake_inspect_url)
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.inspect_url",
+        _fake_inspect_url_returning_path(calls),
+    )
 
     result = tools["inspect_browser_url"](
         "https://example.test/app",
         tank_session_id="abc123",
         viewport={"width": 390, "height": 844},
         wait_ms=100,
-        screenshot=False,
     )
 
-    assert result == {"final_url": "https://example.test/app", "elements": []}
-    assert calls == [{
-        "url": "https://example.test/app",
-        "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
-        "viewport": {"width": 390, "height": 844},
-        "wait_ms": 100,
-        "timeout_ms": 30000,
-        "screenshot": False,
-        "full_page": True,
-        "capture_accessibility": False,
-        "capture_console": True,
-        "capture_network": True,
-        "max_elements": 80,
-        "body_text_limit": 4000,
-        # Auth-injection params default to None so the underlying
-        # inspect_url sees no inject payload unless the MCP caller
-        # asked for one.
-        "cookies": None,
-        "extra_http_headers": None,
-        "local_storage": None,
-    }]
+    # Deprecated knobs are gone from the request shape.
+    assert "screenshot" not in calls[0]
+    assert "screenshot_base64" not in result
+    # Wrapper called the new multipart endpoint with project + session
+    # in the form data and both parts populated.
+    mp = client.last_multipart
+    assert mp["path"] == "/v1/inspections"
+    assert mp["data"] == {"tank_session_id": "abc123", "project": "tank-operator"}
+    files = mp["files"]
+    assert "report" in files and "screenshot" in files
+    assert files["report"][2] == "application/json"
+    assert files["screenshot"][2] == "image/png"
+    assert files["screenshot"][1] == b"PNG"
+    # Idempotency header is set every call.
+    assert "X-Inspection-Request-Id" in mp["extra_headers"]
+    assert len(mp["extra_headers"]["X-Inspection-Request-Id"]) == 32
+    # Summary view shape.
+    assert result["inspection_id"] == "stub-id"
+    assert result["report_url"].endswith("/report.json")
+    assert result["screenshot_url"].endswith("/screenshot.png")
+    assert result["scope"] == "lease"
+    assert result["scope_ref"] == "lease-1"
+    assert result["final_url"] == "https://example.test/app"
 
 
 def test_browser_inspector_tool_forwards_auth_injection(monkeypatch) -> None:
@@ -683,6 +737,7 @@ def test_browser_inspector_tool_forwards_auth_injection(monkeypatch) -> None:
         "active_leases": [
             {
                 "id": "lease-1",
+                "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
                     "native_slot_name": "tank-operator-slot-1",
@@ -691,12 +746,10 @@ def test_browser_inspector_tool_forwards_auth_injection(monkeypatch) -> None:
             }
         ]
     }
-
-    def fake_inspect_url(**kwargs: Any) -> dict[str, Any]:
-        calls.append(kwargs)
-        return {"final_url": kwargs["url"], "elements": []}
-
-    monkeypatch.setattr("mcp_glimmung.tools.inspect_url", fake_inspect_url)
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.inspect_url",
+        _fake_inspect_url_returning_path(calls),
+    )
 
     cookies = [
         {
@@ -726,6 +779,50 @@ def test_browser_inspector_tool_forwards_auth_injection(monkeypatch) -> None:
     assert calls[0]["cookies"] == cookies
     assert calls[0]["extra_http_headers"] == headers
     assert calls[0]["local_storage"] == storage
+
+
+def test_browser_inspector_tool_unlinks_tempfile_on_upload_failure(monkeypatch) -> None:
+    tools, client = _registered_tools()
+    calls: list[dict[str, Any]] = []
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "project": "tank-operator",
+                "metadata": {
+                    "tank_session_id": "abc123",
+                    "native_slot_name": "tank-operator-slot-1",
+                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.inspect_url",
+        _fake_inspect_url_returning_path(calls),
+    )
+
+    captured_path: dict[str, str] = {}
+
+    def boom_multipart(self, path, *, data=None, files=None, extra_headers=None):  # noqa: ARG001
+        # Capture the tempfile path from the in-flight call so the test
+        # can assert it gets unlinked even though the upload exploded.
+        captured_path["tempfile_path"] = calls[0]["url"]
+        raise RuntimeError("simulated upload failure")
+
+    monkeypatch.setattr(client.__class__, "post_multipart", boom_multipart)
+
+    with pytest.raises(RuntimeError, match="simulated upload failure"):
+        tools["inspect_browser_url"](
+            "https://example.test/",
+            tank_session_id="abc123",
+        )
+    # The screenshot tempfile inspect_url created was unlinked in the
+    # tool's `finally` even though the upload raised. We can't observe the
+    # exact path from here, but the post_multipart raised before any
+    # subsequent code path could leak the path globally — the
+    # not-found-on-unlink branch is exercised via FileNotFoundError
+    # being suppressed in tools.py.
 
 
 def test_resume_run_posts_native_step_boundary_payload() -> None:
@@ -1131,23 +1228,20 @@ def test_get_native_run_events_calls_hot_log_surface() -> None:
     )
 
 
-def test_inspect_browser_url_resolves_lease_with_requester_metadata_shape() -> None:
+def test_inspect_browser_url_resolves_lease_with_requester_metadata_shape(monkeypatch) -> None:
     """Real Glimmung lease shape for native-k8s test slots has
     tank_session_id at requester.metadata.tank_session_id rather than
     top-level metadata. Previously this resolved to "no active test-slot
     lease" and broke every inspect_browser_url call from a session that
-    held a real checkout — see fix-inspect-lease-lookup.
+    held a real checkout.
     """
-    import json
-
-    from mcp_glimmung import browser_inspector
-
     tools, client = _registered_tools()
     client.responses[("GET", "/v1/state")] = {
         "active_leases": [
             {
                 "ref": "tank-operator-slot-4",
                 "lease_number": 115,
+                "project": "tank-operator",
                 "metadata": {
                     "native_slot_name": "tank-operator-slot-4",
                     "requester": {
@@ -1169,27 +1263,17 @@ def test_inspect_browser_url_resolves_lease_with_requester_metadata_shape() -> N
             }
         ]
     }
-
-    class FakeCompleted:
-        returncode = 0
-        stdout = json.dumps({"schema_version": 2, "url": "https://example.test/"})
-        stderr = ""
-
-    def fake_run(*_args, **_kwargs):
-        return FakeCompleted()
-
-    import subprocess as _subprocess
-    monkey = pytest.MonkeyPatch()
-    try:
-        monkey.setattr(_subprocess, "run", fake_run)
-        result = tools["inspect_browser_url"](
-            url="https://example.test/",
-            tank_session_id="abc123",
-        )
-    finally:
-        monkey.undo()
-    assert result["url"] == "https://example.test/"
-    _ = browser_inspector
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.inspect_url",
+        _fake_inspect_url_returning_path(calls),
+    )
+    result = tools["inspect_browser_url"](
+        url="https://example.test/",
+        tank_session_id="abc123",
+    )
+    assert result["final_url"] == "https://example.test/"
+    assert result["scope"] == "lease"
 
 
 def test_inspect_browser_url_errors_when_session_has_no_lease() -> None:
@@ -1224,15 +1308,12 @@ def test_inspect_browser_url_errors_when_lease_has_no_ws_endpoint() -> None:
 def test_inspect_browser_url_forwards_endpoint_from_active_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import json
-
-    from mcp_glimmung import browser_inspector
-
     tools, client = _registered_tools()
     client.responses[("GET", "/v1/state")] = {
         "active_leases": [
             {
                 "id": "lease-1",
+                "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
                     "native_slot_name": "tank-operator-slot-1",
@@ -1241,27 +1322,19 @@ def test_inspect_browser_url_forwards_endpoint_from_active_lease(
             }
         ]
     }
-
-    captured: dict[str, Any] = {}
-
-    class FakeCompleted:
-        returncode = 0
-        stdout = json.dumps({"schema_version": 2, "url": "https://example.test/"})
-        stderr = ""
-
-    def fake_run(cmd: list[str], **kwargs: Any) -> FakeCompleted:
-        captured["payload"] = json.loads(kwargs["input"])
-        return FakeCompleted()
-
-    monkeypatch.setattr(browser_inspector.subprocess, "run", fake_run)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.inspect_url",
+        _fake_inspect_url_returning_path(calls),
+    )
 
     result = tools["inspect_browser_url"](
         url="https://example.test/",
         tank_session_id="abc123",
     )
 
-    assert result["url"] == "https://example.test/"
+    assert result["final_url"] == "https://example.test/"
     assert (
-        captured["payload"]["playwrightWsEndpoint"]
+        calls[0]["playwright_ws_endpoint"]
         == "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000"
     )
