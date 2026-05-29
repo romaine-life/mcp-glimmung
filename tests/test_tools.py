@@ -1123,6 +1123,35 @@ def test_return_test_slot_posts_return_payload() -> None:
     )
 
 
+def test_set_test_environment_count_patches_project_count() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["set_test_environment_count"](
+        project="glimmung",
+        count=5,
+    )
+
+    assert result["path"] == "/v1/projects/glimmung/test-environments/count"
+    assert result["json"] == {"count": 5}
+    assert client.calls[-1] == (
+        "PATCH",
+        "/v1/projects/glimmung/test-environments/count",
+        None,
+        {"count": 5},
+    )
+
+
+def test_set_test_environment_count_rejects_out_of_range() -> None:
+    tools, _client = _registered_tools()
+
+    import pytest
+
+    with pytest.raises(ValueError, match="between 0 and 50"):
+        tools["set_test_environment_count"](project="glimmung", count=-1)
+    with pytest.raises(ValueError, match="between 0 and 50"):
+        tools["set_test_environment_count"](project="glimmung", count=51)
+
+
 def test_repair_test_slot_posts_project_slot_repair() -> None:
     tools, client = _registered_tools()
 

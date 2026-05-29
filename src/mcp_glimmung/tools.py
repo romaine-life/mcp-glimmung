@@ -1522,6 +1522,31 @@ def register_tools(
         return sanitized
 
     @mcp.tool()
+    def set_test_environment_count(project: str, count: int) -> dict[str, Any]:
+        """Scale a project's reserved Glimmung test-slot capacity.
+
+        Use to grow or shrink the pool of warm test slots Glimmung keeps
+        provisioned for a project. Lowering the count tears down the
+        highest-indexed slots in excess of `count`; raising it kicks off
+        provisioning of additional slots. The server enforces 0 <= count
+        <= 50 and rejects scale-downs that would evict an actively-leased
+        slot.
+
+        Returns the updated project record. The new capacity becomes
+        available to `checkout_test_slot` after provisioning settles."""
+        if not isinstance(count, int) or count < 0 or count > 50:
+            raise ValueError("count must be an integer between 0 and 50")
+        log.info(
+            "mcp tool set_test_environment_count project=%s count=%s",
+            project,
+            count,
+        )
+        return client.patch(
+            f"/v1/projects/{project}/test-environments/count",
+            json={"count": count},
+        )
+
+    @mcp.tool()
     def repair_test_slot(project: str, slot_name: str) -> dict[str, Any]:
         """Repair/revalidate one configured, unleased Glimmung native test slot.
 
