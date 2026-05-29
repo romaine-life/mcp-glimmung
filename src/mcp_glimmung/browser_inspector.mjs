@@ -225,15 +225,32 @@ try {
 
   let status = null;
   let responseError = null;
+  let networkIdleReached = false;
   try {
     const response = await page.goto(input.url, {
       waitUntil: "domcontentloaded",
       timeout: input.timeoutMs ?? 30000,
     });
     status = response ? response.status() : null;
-    await page.waitForLoadState("networkidle", { timeout: Math.min(input.timeoutMs ?? 30000, 10000) });
   } catch (e) {
+    // Navigation itself failed (DNS, refused connection, navigation timeout,
+    // etc.). Real error — surface it through response_error.
     responseError = String(e?.message ?? e);
+  }
+  if (responseError === null) {
+    // Navigation succeeded. Wait a bounded window for the page to settle to
+    // network idle. Canvas-driven, WebSocket-heavy, polling, and animated
+    // pages never reach network idle by design, so timing out here is the
+    // expected case rather than an error. Surface it as a soft signal
+    // (`network_idle_reached`) and keep response_error clean — callers
+    // should not see a "page is broken" signal for a page that's working
+    // exactly as intended.
+    try {
+      await page.waitForLoadState("networkidle", { timeout: Math.min(input.timeoutMs ?? 30000, 10000) });
+      networkIdleReached = true;
+    } catch (_) {
+      networkIdleReached = false;
+    }
   }
   if ((input.waitMs ?? 0) > 0) {
     await page.waitForTimeout(input.waitMs);
@@ -287,6 +304,7 @@ try {
     final_url: page.url(),
     status,
     response_error: responseError,
+    network_idle_reached: networkIdleReached,
     title: await page.title(),
     body_text: truncate(bodyText.replace(/\0/g, ""), input.bodyTextLimit ?? 4000),
     viewport: input.viewport || { width: 1440, height: 900 },
