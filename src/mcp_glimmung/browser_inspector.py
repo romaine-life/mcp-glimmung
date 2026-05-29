@@ -191,6 +191,8 @@ def summary_view(
         "final_url": report.get("final_url") or "",
         "status": report.get("status"),
         "title": report.get("title") or "",
+        "response_error": report.get("response_error"),
+        "network_idle_reached": bool(report.get("network_idle_reached")),
         "body_text_preview": body_text_preview,
         "elements_preview": elements_preview,
         "console_messages_preview": _truncate_list(console_messages, max_console_messages),

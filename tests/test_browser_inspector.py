@@ -168,6 +168,8 @@ def test_summary_view_bounds_console_and_network() -> None:
         "page_errors": [str(i) for i in range(200)],
         "failed_requests": [{"url": str(i)} for i in range(200)],
         "http_errors": [{"url": str(i), "status": 500} for i in range(200)],
+        "response_error": None,
+        "network_idle_reached": True,
         "inspected_at": "2026-05-28T00:00:00.000Z",
     }
     summary = summary_view(
@@ -195,6 +197,39 @@ def test_summary_view_bounds_console_and_network() -> None:
     assert len(summary["failed_requests_preview"]) == 4
     assert summary["console_error_count"] == 0  # none of the fake logs are 'error'
     assert summary["http_error_count"] == 200
+    assert summary["response_error"] is None
+    assert summary["network_idle_reached"] is True
+
+
+def test_summary_view_surfaces_network_idle_false_without_response_error() -> None:
+    # The canvas/WebSocket/polling case: navigation succeeded so
+    # response_error is None, but the page never reached network idle.
+    # The summary should make the distinction visible so callers don't
+    # treat a still-active page as a broken page.
+    report = {
+        "final_url": "https://canvas.example/",
+        "status": 200,
+        "title": "live",
+        "body_text": "",
+        "elements": [],
+        "console": [],
+        "page_errors": [],
+        "failed_requests": [],
+        "http_errors": [],
+        "response_error": None,
+        "network_idle_reached": False,
+        "inspected_at": "2026-05-28T00:00:00.000Z",
+    }
+    summary = summary_view(
+        report,
+        inspection_id="i1",
+        report_url="/v1/artifacts/inspections/L/i1/report.json",
+        screenshot_url="/v1/artifacts/inspections/L/i1/screenshot.png",
+        scope="lease",
+        scope_ref="L",
+    )
+    assert summary["response_error"] is None
+    assert summary["network_idle_reached"] is False
 
 
 def test_fresh_inspection_request_id_is_unique() -> None:
