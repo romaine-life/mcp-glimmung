@@ -1052,6 +1052,27 @@ def register_tools(
         return client.patch(f"/v1/workflows/{project}/{name}", json=payload)
 
     @mcp.tool()
+    def delete_workflow(
+        project: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Deregister (delete) a Glimmung workflow by project + name.
+
+        Permanently removes the workflow definition so it can no longer be
+        dispatched. Use this to retire a workflow that has been migrated
+        away or replaced — e.g. a dead `gha_dispatch` workflow whose
+        GitHub Actions file no longer exists. Admin-gated server-side; the
+        caller's identity rides through on the forwarded JWT.
+
+        Returns the deleted Workflow record. Errors if no workflow matches
+        `project`/`name`. This is not reversible from the MCP surface —
+        re-create with `register_workflow` (or `sync_workflow`) if needed.
+
+        `name` is the workflow's canonical handle (e.g. "issue-agent");
+        pair it with `project` (the partition key)."""
+        return client.delete(f"/v1/workflows/{project}/{name}")
+
+    @mcp.tool()
     def check_workflow_updates(
         project: str,
         workflow: str,

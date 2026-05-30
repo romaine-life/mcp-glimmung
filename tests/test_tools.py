@@ -38,6 +38,12 @@ class StubClient:
         self.calls.append(("PATCH", path, None, json))
         return {"path": path, "json": json}
 
+    def delete(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.calls.append(("DELETE", path, params, None))
+        if ("DELETE", path) in self.responses:
+            return self.responses[("DELETE", path)]
+        return {"path": path}
+
     def post(
         self,
         path: str,
@@ -369,6 +375,20 @@ def test_dispatch_run_hides_backing_lease_id() -> None:
         None,
         {"project": "glimmung", "issue_number": 1},
     )
+
+
+def test_delete_workflow_calls_delete_endpoint() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["delete_workflow"](project="spirelens", name="issue-agent")
+
+    assert client.calls[-1] == (
+        "DELETE",
+        "/v1/workflows/spirelens/issue-agent",
+        None,
+        None,
+    )
+    assert result == {"path": "/v1/workflows/spirelens/issue-agent"}
 
 
 def test_check_workflow_updates_calls_upstream_endpoint() -> None:
