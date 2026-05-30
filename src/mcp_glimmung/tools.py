@@ -1120,6 +1120,58 @@ def register_tools(
         )
 
     @mcp.tool()
+    def check_project_updates(
+        project: str,
+        ref: str = "main",
+    ) -> dict[str, Any]:
+        """Check whether a project repo's `.glimmung/project.yaml` differs from
+        the authored config currently registered for that project in Glimmung.
+        Read-only — does not change anything in Glimmung.
+
+        Returns a `ProjectUpstreamResult` shape:
+          {
+            "project": ..., "ref": ..., "repo": ...,
+            "upstream": <ProjectRegister payload from the file, or null>,
+            "current":  <Project currently registered, or null>,
+            "in_sync":  bool — True only if both exist and authored config matches,
+            "fetch_error": <str or null>,
+          }
+
+        This is the project-level analogue of `check_workflow_updates`. Only
+        authored config is compared; reconciler-owned status (e.g.
+        `managed_auth_origin_status`) is ignored, so a status write never shows
+        as drift. Use this before `sync_project` to see what would change. The
+        `ref` parameter overrides the default branch (`main`) — set it to
+        inspect a feature branch's proposed project config before merging."""
+        return client.get(
+            f"/v1/projects/{project}/upstream",
+            params={"ref": ref},
+        )
+
+    @mcp.tool()
+    def sync_project(
+        project: str,
+        ref: str = "main",
+    ) -> dict[str, Any]:
+        """Apply a project repo's `.glimmung/project.yaml` to Glimmung — fetch
+        upstream, validate, and replace authored config when different.
+        Idempotent: calling on an already-in-sync project is a no-op that still
+        returns the comparison result.
+
+        This is the project-level analogue of `sync_workflow`. The sync
+        replaces authored config wholesale and mints a new immutable config
+        version, but never touches the reconciler-owned `status` column — so a
+        sync cannot clobber server-reconciled status. Admin-gated. Use this
+        after pushing a `.glimmung/project.yaml` change to main so the new
+        config takes effect without anybody running register-project scripts.
+        The returned `ProjectUpstreamResult.in_sync` will always be True on
+        success."""
+        return client.post(
+            f"/v1/projects/{project}/sync",
+            params={"ref": ref},
+        )
+
+    @mcp.tool()
     def patch_issue(
         project: str,
         issue_number: int,
