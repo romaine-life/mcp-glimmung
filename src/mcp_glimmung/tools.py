@@ -1066,58 +1066,11 @@ def register_tools(
 
         Returns the deleted Workflow record. Errors if no workflow matches
         `project`/`name`. This is not reversible from the MCP surface —
-        re-create with `register_workflow` (or `sync_workflow`) if needed.
+        re-create with `register_workflow` if needed.
 
         `name` is the workflow's canonical handle (e.g. "issue-agent");
         pair it with `project` (the partition key)."""
         return client.delete(f"/v1/workflows/{project}/{name}")
-
-    @mcp.tool()
-    def check_workflow_updates(
-        project: str,
-        workflow: str,
-        ref: str = "main",
-    ) -> dict[str, Any]:
-        """Check whether a project repo's `.glimmung/workflows/<workflow>.yaml`
-        differs from what's currently registered for that workflow in
-        Glimmung. Read-only — does not change anything in Glimmung.
-
-        Returns a `WorkflowUpstreamResult` shape:
-          {
-            "project": ..., "workflow": ..., "ref": ..., "repo": ...,
-            "upstream": <WorkflowRegister payload from the file>,
-            "current":  <Workflow currently registered, or null>,
-            "in_sync":  bool — True only if both exist and match,
-          }
-
-        Use this before `sync_workflow` when you want to see what would
-        change. The `ref` parameter overrides the default branch (`main`)
-        — set it to inspect a feature branch's proposed workflow shape
-        before merging."""
-        return client.get(
-            f"/v1/projects/{project}/workflows/{workflow}/upstream",
-            params={"ref": ref},
-        )
-
-    @mcp.tool()
-    def sync_workflow(
-        project: str,
-        workflow: str,
-        ref: str = "main",
-    ) -> dict[str, Any]:
-        """Apply a project repo's `.glimmung/workflows/<workflow>.yaml` to
-        Glimmung — fetch upstream, validate, upsert when different.
-        Idempotent: calling on an already-in-sync workflow is a no-op
-        that still returns the comparison result.
-
-        Use this after pushing a workflow-shape change to main so the new
-        definition takes effect without anybody running register-workflow
-        scripts. The returned `WorkflowUpstreamResult.in_sync` will always
-        be True on success."""
-        return client.post(
-            f"/v1/projects/{project}/workflows/{workflow}/sync",
-            params={"ref": ref},
-        )
 
     @mcp.tool()
     def check_project_updates(
@@ -1137,8 +1090,7 @@ def register_tools(
             "fetch_error": <str or null>,
           }
 
-        This is the project-level analogue of `check_workflow_updates`. Only
-        authored config is compared; reconciler-owned status (e.g.
+        Only authored config is compared; reconciler-owned status (e.g.
         `managed_auth_origin_status`) is ignored, so a status write never shows
         as drift. Use this before `sync_project` to see what would change. The
         `ref` parameter overrides the default branch (`main`) — set it to
@@ -1158,8 +1110,7 @@ def register_tools(
         Idempotent: calling on an already-in-sync project is a no-op that still
         returns the comparison result.
 
-        This is the project-level analogue of `sync_workflow`. The sync
-        replaces authored config wholesale and mints a new immutable config
+        The sync replaces authored config wholesale and mints a new immutable config
         version, but never touches the reconciler-owned `status` column — so a
         sync cannot clobber server-reconciled status. Admin-gated. Use this
         after pushing a `.glimmung/project.yaml` change to main so the new
