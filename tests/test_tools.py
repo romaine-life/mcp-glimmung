@@ -229,6 +229,16 @@ def test_list_leases_excludes_drained_hosts_from_available() -> None:
                 "state": "claimed",
             },
         ],
+        "test_slot_admissions": [
+            {
+                "project": "tank-operator",
+                "configured_test_slots": 2,
+                "prepared_available_test_slots": 1,
+                "claimed_test_slots": 1,
+                "checkout_available_test_slots": 1,
+                "waiting_checkout_requests": 0,
+            }
+        ],
         "hosts": [
             {
                 "name": "slot-1",
@@ -258,7 +268,54 @@ def test_list_leases_excludes_drained_hosts_from_available() -> None:
     assert [slot["slot_name"] for slot in result["available_test_slots"]] == [
         "tank-operator-slot-1"
     ]
+    assert [slot["slot_name"] for slot in result["prepared_test_slots"]] == [
+        "tank-operator-slot-1"
+    ]
+    assert result["test_slot_admissions"][0]["checkout_available_test_slots"] == 1
     assert [host["name"] for host in result["available_hosts"]] == ["slot-1"]
+
+
+def test_list_leases_uses_admission_projection_for_checkout_availability() -> None:
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {
+        "test_environments": [
+            {
+                "project": "tank-operator",
+                "slot_index": 6,
+                "slot_name": "tank-operator-slot-6",
+                "state": "available",
+            },
+            {
+                "project": "tank-operator",
+                "slot_index": 7,
+                "slot_name": "tank-operator-slot-7",
+                "state": "available",
+            },
+        ],
+        "test_slot_admissions": [
+            {
+                "project": "tank-operator",
+                "configured_test_slots": 11,
+                "prepared_available_test_slots": 2,
+                "claimed_test_slots": 5,
+                "checkout_available_test_slots": 1,
+                "waiting_checkout_requests": 0,
+            }
+        ],
+        "hosts": [],
+        "active_leases": [],
+        "pending_leases": [],
+    }
+
+    result = tools["list_leases"](project="tank-operator")
+
+    assert [slot["slot_name"] for slot in result["prepared_test_slots"]] == [
+        "tank-operator-slot-6",
+        "tank-operator-slot-7",
+    ]
+    assert [slot["slot_name"] for slot in result["available_test_slots"]] == [
+        "tank-operator-slot-6"
+    ]
 
 
 def test_list_issues_plain_call_caps_results() -> None:

@@ -34,3 +34,8 @@ Checkout may return while activation is still running. When the response has
 `state: "activating"` and `usable: false`, callers should poll the returned
 `status_url` or `get_state` until the slot is `active` and `usable` before
 using the environment.
+
+`list_leases` separates prepared lifecycle capacity from checkout admission.
+`prepared_test_slots` are durable slot rows with lifecycle state `available`;
+`available_test_slots` are the subset the Glimmung state projection reports as
+checkout-admissible.
