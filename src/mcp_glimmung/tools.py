@@ -398,13 +398,15 @@ def register_tools(
 
     @mcp.tool()
     def list_leases(project: str | None = None) -> dict[str, Any]:
-        """Check lease availability: native test slots, free hosts, active leases, and pending leases.
+        """Check checkout availability: native test slots, free hosts, active leases, and pending leases.
 
         Returns three lists:
-        - `available_test_slots`: native test slots with state `available`.
+        - `available_test_slots`: native test slots currently eligible for checkout.
+        - `prepared_test_slots`: native test slots with lifecycle state `available`.
         - `available_hosts`: non-drained registered worker hosts with no current lease.
         - `active_leases`: leases currently holding a host or native slot.
         - `pending_leases`: leases queued but not yet assigned capacity.
+        - `test_slot_admissions`: per-project durable checkout capacity counters.
 
         Pass `project` to narrow all three lists to a single project.
         Omit it to see the full cross-project picture."""
@@ -412,11 +414,16 @@ def register_tools(
 
         hosts = state.get("hosts") or []
         test_slots = state.get("test_environments") or []
+        admissions = state.get("test_slot_admissions") or []
         active = state.get("active_leases") or []
         pending = state.get("pending_leases") or []
 
         if project is not None:
             test_slots = [slot for slot in test_slots if slot.get("project") == project]
+            admissions = [
+                admission for admission in admissions
+                if admission.get("project") == project
+            ]
             hosts = [
                 h for h in hosts
                 if isinstance(h.get("capabilities"), dict)
@@ -436,15 +443,33 @@ def register_tools(
             and not h.get("drained")
             and h.get("name") not in test_slot_names
         ]
+        prepared_test_slots = [
+            slot for slot in test_slots
+            if slot.get("state") == "available"
+        ]
+        checkout_slots_by_project: dict[str, int] = {
+            str(admission.get("project")): int(admission.get("checkout_available_test_slots") or 0)
+            for admission in admissions
+            if admission.get("project") is not None
+        }
+        seen_checkout_by_project: dict[str, int] = {}
+        checkout_available_test_slots = []
+        for slot in prepared_test_slots:
+            slot_project = str(slot.get("project") or "")
+            limit = checkout_slots_by_project.get(slot_project, len(prepared_test_slots))
+            seen = seen_checkout_by_project.get(slot_project, 0)
+            if seen >= limit:
+                continue
+            checkout_available_test_slots.append(slot)
+            seen_checkout_by_project[slot_project] = seen + 1
 
         return {
-            "available_test_slots": [
-                slot for slot in test_slots
-                if slot.get("state") == "available"
-            ],
+            "available_test_slots": checkout_available_test_slots,
+            "prepared_test_slots": prepared_test_slots,
             "available_hosts": available_hosts,
             "active_leases": active,
             "pending_leases": pending,
+            "test_slot_admissions": admissions,
         }
 
     @mcp.tool()
