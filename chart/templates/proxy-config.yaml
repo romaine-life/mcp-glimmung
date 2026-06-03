@@ -45,8 +45,8 @@ subjects:
   # calls Tank's in-cluster MCP servers from its own pod via the same
   # mcp-auth-proxy sidecar shape Tank session pods use. The
   # application-layer auth on the X-Auth-Romaine-Token side header
-  # (auth.romaine.life service JWT) is onboarded via nelsong6/auth#41.
-  # See nelsong6/tank-operator#540.
+  # (auth.romaine.life service JWT) is onboarded via romaine-life/auth#41.
+  # See romaine-life/tank-operator#540.
   - kind: ServiceAccount
     name: hermes
     namespace: hermes

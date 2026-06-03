@@ -639,7 +639,7 @@ def register_tools(
         in the lease, not in the response. A caller that disconnects mid-
         request can re-query via the lease's metadata to see the result.
 
-        See docs/test-slot-hot-swap.md in nelsong6/glimmung for the workflow
+        See docs/test-slot-hot-swap.md in romaine-life/glimmung for the workflow
         contract and the contract shape projects need to declare.
         """
         problem = _active_hot_swap_lease_problem(client, project, slot_name, slot_index)

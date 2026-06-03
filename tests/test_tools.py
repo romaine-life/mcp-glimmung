@@ -361,11 +361,11 @@ def test_retired_report_tools_are_not_registered() -> None:
 def test_project_and_workflow_list_tools_pass_filters_and_default_limits() -> None:
     tools, client = _registered_tools()
 
-    tools["list_projects"](name="glim", github_repo="nelsong6/glimmung")
+    tools["list_projects"](name="glim", github_repo="romaine-life/glimmung")
     tools["list_workflows"](project="glimmung", name="agent", trigger_label="issue-agent")
 
     assert client.calls[-2:] == [
-        ("GET", "/v1/projects", {"name": "glim", "github_repo": "nelsong6/glimmung", "limit": 50}, None),
+        ("GET", "/v1/projects", {"name": "glim", "github_repo": "romaine-life/glimmung", "limit": 50}, None),
         (
             "GET",
             "/v1/workflows",
@@ -492,16 +492,16 @@ def test_enqueue_signal_posts_drain_loop_payload() -> None:
 
     result = tools["enqueue_signal"](
         target_type="pr",
-        target_repo="nelsong6/glimmung",
-        target_ref="nelsong6/glimmung#123",
+        target_repo="romaine-life/glimmung",
+        target_ref="romaine-life/glimmung#123",
         payload={"kind": "reject", "feedback": "tighten tests"},
     )
 
     assert result["path"] == "/v1/signals"
     assert result["json"] == {
         "target_type": "pr",
-        "target_repo": "nelsong6/glimmung",
-        "target_ref": "nelsong6/glimmung#123",
+        "target_repo": "romaine-life/glimmung",
+        "target_ref": "romaine-life/glimmung#123",
         "source": "glimmung_ui",
         "payload": {"kind": "reject", "feedback": "tighten tests"},
     }
@@ -513,13 +513,13 @@ def test_register_project_posts_admin_payload() -> None:
 
     project = tools["register_project"](
         "glimmung",
-        "nelsong6/glimmung",
+        "romaine-life/glimmung",
         metadata={"tier": "control-plane"},
     )
 
     assert project["json"] == {
         "name": "glimmung",
-        "github_repo": "nelsong6/glimmung",
+        "github_repo": "romaine-life/glimmung",
         "metadata": {"tier": "control-plane"},
     }
     assert "register_host" not in tools
