@@ -344,6 +344,49 @@ def test_project_scoped_issue_and_run_tools_call_human_id_surface() -> None:
     assert "abort_run_by_id" not in tools
 
 
+def test_get_dashboard_resource_resolves_url_via_content_negotiation() -> None:
+    tools, client = _registered_tools()
+
+    step_url = (
+        "https://glimmung.romaine.life/projects/ambience/issues/168"
+        "/runs/9/cycles/1/phases/llm-verify/jobs/llm-verify/steps/run-verification"
+    )
+    step_path = (
+        "/projects/ambience/issues/168"
+        "/runs/9/cycles/1/phases/llm-verify/jobs/llm-verify/steps/run-verification"
+    )
+
+    result = tools["get_dashboard_resource"](url=step_url)
+
+    assert result["path"] == step_path
+    assert client.calls[-1] == ("GET", step_path, {"format": "json"}, None)
+
+
+def test_get_dashboard_resource_accepts_absolute_path_and_drops_query() -> None:
+    tools, client = _registered_tools()
+
+    tools["get_dashboard_resource"](url="/projects/ambience/issues/168?foo=bar")
+
+    assert client.calls[-1] == (
+        "GET",
+        "/projects/ambience/issues/168",
+        {"format": "json"},
+        None,
+    )
+
+
+def test_get_dashboard_resource_rejects_non_dashboard_input() -> None:
+    tools, _ = _registered_tools()
+    for bad in (
+        "",
+        "ambience#168",
+        "https://glimmung.romaine.life/leases/test",
+        "/sessions/530",
+    ):
+        with pytest.raises(ValueError):
+            tools["get_dashboard_resource"](url=bad)
+
+
 def test_retired_report_tools_are_not_registered() -> None:
     tools, client = _registered_tools()
 
