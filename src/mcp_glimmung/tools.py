@@ -8,6 +8,7 @@ import json
 import logging
 import os
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -137,6 +138,35 @@ def _run_display(value: int | str) -> str:
         f'(e.g. "6.1"); got {display!r}. A bare run number or the flat '
         f"issue-scoped cycle-ledger number is a display value, not an address."
     )
+
+
+def _dashboard_path(value: str) -> str:
+    """Extract the absolute dashboard path from a Glimmung dashboard URL.
+
+    Accepts a full URL (``https://glimmung.romaine.life/projects/...``) or an
+    absolute path (``/projects/...``); query strings and fragments are dropped
+    and the host is stripped, since the path is re-hosted against the configured
+    glimmung backend. The path must address the dashboard ``/projects`` surface;
+    anything else is rejected so a mistyped link can't hit an unrelated
+    endpoint. The URL-to-resource resolution itself — including canonical
+    run-cycle addressing — happens server-side; see glimmung
+    publicids.ParseDashboardPath.
+    """
+    text = (value or "").strip()
+    if not text:
+        raise ValueError("dashboard url must not be empty")
+    if "://" in text or text.startswith("/"):
+        path = urlsplit(text).path
+    else:
+        raise ValueError(
+            f"expected a Glimmung dashboard URL or absolute path, got {value!r}"
+        )
+    path = path.rstrip("/") or "/"
+    if path != "/projects" and not path.startswith("/projects/"):
+        raise ValueError(
+            f"not a Glimmung dashboard resource path: {path!r} (expected /projects/...)"
+        )
+    return path
 
 
 def _as_positive_int(value: Any) -> int | None:
@@ -361,6 +391,28 @@ def register_tools(
         return client.get(
             f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/report",
         )
+
+    @mcp.tool()
+    def get_dashboard_resource(url: str) -> dict[str, Any]:
+        """Resolve a Glimmung dashboard URL to its canonical resource JSON.
+
+        Paste a dashboard deep link exactly as it appears in the browser — a
+        full URL or the ``/projects/...`` path, e.g.
+        ``https://glimmung.romaine.life/projects/ambience/issues/168/runs/9/cycles/1/phases/llm-verify/jobs/llm-verify/steps/run-verification``
+        — and get the resource back without dissecting the URL yourself:
+
+        - a run, or any phase/job/step under it, returns the ``RunReport`` (the
+          canonical review object) wrapped with a ``focus`` block naming the
+          addressed phase/job/step and ``links`` to the typed reads — the run
+          report, native events narrowed to that job/step, and native status;
+        - an issue link returns the issue detail.
+
+        The server owns the URL-to-resource resolution, including canonical
+        run-cycle addressing, so a copied link Just Works. Project and
+        run-index links are navigation surfaces, not single resources, and
+        return an error pointing at a specific issue or run.
+        """
+        return client.get(_dashboard_path(url), params={"format": "json"})
 
     @mcp.tool()
     def get_native_run_events(
