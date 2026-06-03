@@ -25,6 +25,39 @@ log = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "http://glimmung.glimmung.svc"
 
 
+def _raise_for_status(r: httpx.Response) -> None:
+    """Raise on a non-2xx glimmung response, surfacing the problem detail.
+
+    glimmung returns errors as ``{"detail": "..."}`` (writeProblem). The bare
+    ``httpx`` ``raise_for_status`` drops that body, so an agent only sees
+    "Client error '400 Bad Request'". Pull the detail into the message so the
+    actual reason — e.g. the canonical run-cycle requirement — reaches the
+    caller instead of being swallowed.
+    """
+    if r.is_success:
+        return
+    detail: str | None = None
+    try:
+        body = r.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict):
+        for key in ("detail", "error", "message"):
+            value = body.get(key)
+            if isinstance(value, str) and value.strip():
+                detail = value.strip()
+                break
+    if detail is None:
+        text = (r.text or "").strip()
+        detail = text or None
+    method = r.request.method if r.request is not None else "?"
+    path = r.request.url.path if r.request is not None else ""
+    msg = f"glimmung {method} {path} -> {r.status_code}"
+    if detail:
+        msg = f"{msg}: {detail}"
+    raise httpx.HTTPStatusError(msg, request=r.request, response=r)
+
+
 class GlimmungClient:
     def __init__(
         self,
@@ -45,17 +78,17 @@ class GlimmungClient:
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         r = self._http.get(self._base_url + path, params=params, headers=self._headers())
-        r.raise_for_status()
+        _raise_for_status(r)
         return r.json()
 
     def patch(self, path: str, json: dict[str, Any]) -> Any:
         r = self._http.patch(self._base_url + path, json=json, headers=self._headers())
-        r.raise_for_status()
+        _raise_for_status(r)
         return r.json()
 
     def delete(self, path: str, params: dict[str, Any] | None = None) -> Any:
         r = self._http.delete(self._base_url + path, params=params, headers=self._headers())
-        r.raise_for_status()
+        _raise_for_status(r)
         return r.json()
 
     def post(
@@ -70,7 +103,7 @@ class GlimmungClient:
             json=json,
             headers=self._headers(),
         )
-        r.raise_for_status()
+        _raise_for_status(r)
         return r.json()
 
     def post_multipart(
@@ -100,5 +133,5 @@ class GlimmungClient:
             files=files,
             headers=headers,
         )
-        r.raise_for_status()
+        _raise_for_status(r)
         return r.json()

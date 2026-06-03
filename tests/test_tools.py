@@ -906,7 +906,7 @@ def test_resume_run_posts_native_step_boundary_payload() -> None:
     result = tools["resume_run"](
         project="glimmung",
         issue_number=141,
-        run_number=1,
+        run_number="1.1",
         entrypoint_phase="agent-execute",
         entrypoint_job_id="agent",
         entrypoint_step_slug="run-agent",
@@ -916,7 +916,7 @@ def test_resume_run_posts_native_step_boundary_payload() -> None:
         trigger_source={"actor": "codex"},
     )
 
-    assert result["path"] == "/v1/projects/glimmung/issues/141/runs/1/resume"
+    assert result["path"] == "/v1/projects/glimmung/issues/141/runs/1.1/resume"
     assert result["json"] == {
         "entrypoint_phase": "agent-execute",
         "entrypoint_job_id": "agent",
@@ -927,10 +927,59 @@ def test_resume_run_posts_native_step_boundary_payload() -> None:
         "trigger_source": {
             "kind": "resume_via_mcp",
             "resumed_from_issue_number": 141,
-            "resumed_from_run_number": "1",
+            "resumed_from_run_number": "1.1",
             "actor": "codex",
         },
     }
+
+
+def test_run_number_tools_reject_non_canonical_addresses() -> None:
+    """A bare run number or the flat cycle-ledger number is not an address:
+    the run-cycle tools reject it before any request reaches glimmung, so the
+    get_run_report(run_number=9) -> "6.1" class of bug cannot recur at the MCP
+    surface (mcp-surface-rollout.md: don't rely on the backend alone)."""
+    tools, client = _registered_tools()
+
+    for bad in ["9", "6", "0.1", "6.0", "1.", ".1", "1.2.3", "abc", ""]:
+        with pytest.raises(ValueError):
+            tools["get_run_report"](project="ambience", issue_number=168, run_number=bad)
+        with pytest.raises(ValueError):
+            tools["abort_run"](project="ambience", issue_number=168, run_number=bad)
+
+    # No malformed address ever reached the HTTP client.
+    assert client.calls == []
+
+    # The canonical run.cycle form is accepted and forwarded verbatim.
+    report = tools["get_run_report"](project="ambience", issue_number=168, run_number="6.1")
+    assert report["path"] == "/v1/projects/ambience/issues/168/runs/6.1/report"
+
+
+def test_raise_for_status_surfaces_glimmung_problem_detail() -> None:
+    """glimmung returns errors as {"detail": ...}; the client must surface that
+    detail so an agent sees *why* (e.g. the canonical run-cycle requirement)
+    instead of a bare 'Client error 400 Bad Request'."""
+    from mcp_glimmung.glimmung_client import _raise_for_status
+
+    request = httpx.Request(
+        "GET", "http://glimmung.glimmung.svc/v1/projects/ambience/issues/168/runs/9/report"
+    )
+    response = httpx.Response(
+        400,
+        json={"detail": 'run_number must be a canonical run-cycle number like "6.1"'},
+        request=request,
+    )
+    with pytest.raises(httpx.HTTPStatusError) as exc:
+        _raise_for_status(response)
+    message = str(exc.value)
+    assert "400" in message
+    assert "canonical run-cycle number" in message
+
+
+def test_raise_for_status_is_noop_on_success() -> None:
+    from mcp_glimmung.glimmung_client import _raise_for_status
+
+    request = httpx.Request("GET", "http://glimmung.glimmung.svc/v1/state")
+    _raise_for_status(httpx.Response(200, json={"ok": True}, request=request))
 
 
 def test_checkout_test_slot_posts_checkout_payload() -> None:
@@ -1317,16 +1366,16 @@ def test_get_native_run_events_calls_hot_log_surface() -> None:
     result = tools["get_native_run_events"](
         project="ambience",
         issue_number=44,
-        run_number=1,
+        run_number="1.1",
         attempt_index=2,
         job_id="agent",
         limit=25,
     )
 
-    assert result["path"] == "/v1/projects/ambience/issues/44/runs/1/native/events"
+    assert result["path"] == "/v1/projects/ambience/issues/44/runs/1.1/native/events"
     assert client.calls[-1] == (
         "GET",
-        "/v1/projects/ambience/issues/44/runs/1/native/events",
+        "/v1/projects/ambience/issues/44/runs/1.1/native/events",
         {"attempt_index": 2, "job_id": "agent", "limit": 25},
         None,
     )
