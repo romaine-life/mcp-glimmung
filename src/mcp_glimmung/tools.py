@@ -111,10 +111,32 @@ def _result_lease_label(result: dict[str, Any]) -> str:
 
 
 def _run_display(value: int | str) -> str:
+    """Validate and return a canonical run-cycle address (``run.cycle``).
+
+    A run cycle is addressed by its display number: the logical run number and
+    the run-local cycle ordinal, e.g. ``"6.1"``. A bare run number or the flat
+    issue-scoped cycle-ledger number is a *display* value, not an address —
+    glimmung's resolvers reject it (and used to silently resolve it to the
+    wrong run cycle). Mirrors ParseRunCycleAddress in glimmung; see
+    romaine-life/glimmung docs/run-graph-display-design.md.
+    """
     display = str(value).strip()
     if not display:
         raise ValueError("run_number required")
-    return display
+    parts = display.split(".")
+    if (
+        len(parts) == 2
+        and parts[0].isdigit()
+        and parts[1].isdigit()
+        and int(parts[0]) >= 1
+        and int(parts[1]) >= 1
+    ):
+        return display
+    raise ValueError(
+        f'run_number must be the canonical run-cycle number "run.cycle" '
+        f'(e.g. "6.1"); got {display!r}. A bare run number or the flat '
+        f"issue-scoped cycle-ledger number is a display value, not an address."
+    )
 
 
 def _as_positive_int(value: Any) -> int | None:
@@ -327,10 +349,13 @@ def register_tools(
 
     @mcp.tool()
     def get_run_report(project: str, issue_number: int, run_number: str) -> dict[str, Any]:
-        """Get one RunReport by issue-scoped run display number.
+        """Get one RunReport by issue-scoped run-cycle number.
 
-        Use this for normal operator work: "run 1.3 for glimmung#141"
-        maps to `project="glimmung", issue_number=141, run_number="1.3"`.
+        ``run_number`` is the canonical ``run.cycle`` display number: "run 1.3
+        for glimmung#141" maps to `project="glimmung", issue_number=141,
+        run_number="1.3"`. A bare run number or the flat issue-scoped
+        cycle-ledger number is not an address and is rejected — the ledger
+        number is a display value only.
         """
         run_number = _run_display(run_number)
         return client.get(
