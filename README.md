@@ -40,6 +40,15 @@ using the environment.
 `available_test_slots` are the subset the Glimmung state projection reports as
 checkout-admissible.
 
+## Synthetic Dispatch Tool Contract
+
+`synthetic_dispatch_run` wraps Glimmung's break-glass
+`POST /v1/runs/synthetic-dispatch` endpoint. The tool is intentionally strict:
+it does not fetch prior runs, infer skipped phase outputs, provision a test
+slot, or repair workflow shape. Callers must provide `start_at_phase`, a
+claimed `slot_lease_ref`, and every supplied phase output the entrypoint phase
+will need.
+
 ## Authenticated Tank Browser Inspections
 
 `inspect_browser_url` supports `tank_auth=True` for Tank UI pages. The tool

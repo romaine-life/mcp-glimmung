@@ -1608,6 +1608,49 @@ def register_tools(
         return _hide_lease_id(client.post("/v1/runs/dispatch", json=payload))
 
     @mcp.tool()
+    def synthetic_dispatch_run(
+        issue_number: int,
+        project: str,
+        start_at_phase: str,
+        supplied_phase_outputs: list[dict[str, Any]],
+        slot_lease_ref: str,
+        reason: str,
+        workflow: str | None = None,
+        namespace: str | None = None,
+        validation_url: str | None = None,
+        trigger_source: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create a break-glass synthetic Glimmung run from caller-supplied facts.
+
+        This tool is intentionally strict and unhelpful. It does not fetch old
+        runs, infer missing outputs, provision a test slot, or decide which
+        phases matter. The caller must provide the exact `start_at_phase`, a
+        claimed `slot_lease_ref`, and every skipped phase output that the
+        entrypoint phase needs. Missing or wrong data should fail at the
+        Glimmung API boundary.
+
+        `supplied_phase_outputs` is a list of objects shaped like
+        `{"phase": "llm-work", "phase_outputs": {"branch_name": "..."}}`.
+        Earlier phases render as supplied, not passed."""
+        payload: dict[str, Any] = {
+            "project": project,
+            "issue_number": issue_number,
+            "start_at_phase": start_at_phase,
+            "supplied_phase_outputs": supplied_phase_outputs,
+            "execution_context": {"slot_lease_ref": slot_lease_ref},
+            "reason": reason,
+        }
+        if workflow is not None:
+            payload["workflow"] = workflow
+        if namespace is not None:
+            payload["execution_context"]["namespace"] = namespace
+        if validation_url is not None:
+            payload["execution_context"]["validation_url"] = validation_url
+        if trigger_source is not None:
+            payload["trigger_source"] = trigger_source
+        return _hide_lease_id(client.post("/v1/runs/synthetic-dispatch", json=payload))
+
+    @mcp.tool()
     def checkout_test_slot(
         project: str,
         tank_session_id: str,
