@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from romaine_auth import current_caller
 
 from .browser_inspector import (
     fresh_inspection_request_id,
@@ -27,6 +28,7 @@ _CALLER_MISSING_MSG = (
     "inside a tank-operator session pod"
 )
 log = logging.getLogger(__name__)
+_TANK_AUTH_STORAGE_KEY = "auth-romaine-jwt"
 
 
 def _pod_ip() -> str:
@@ -39,6 +41,85 @@ def _pod_ip() -> str:
 def _tank_session_id(value: str) -> str:
     """Normalize either a Tank session id or its Kubernetes pod name."""
     return value.removeprefix("session-")
+
+
+def _origin_from_url(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("tank_auth requires an absolute http(s) URL")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _caller_raw_token() -> str:
+    caller = current_caller()
+    token = str(getattr(caller, "raw_token", "") or "").strip()
+    if not token:
+        raise RuntimeError(
+            "tank_auth requires the inbound auth.romaine.life caller token; "
+            "CallerJWTMiddleware should have bound current_caller().raw_token"
+        )
+    return token
+
+
+def _preflight_tank_auth(origin: str, token: str) -> dict[str, Any]:
+    url = f"{origin}/api/auth/me"
+    try:
+        response = httpx.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"tank_auth preflight failed for {url}: {exc}") from exc
+    if not response.is_success:
+        body = (response.text or "").strip()
+        if len(body) > 500:
+            body = body[:500] + "...(truncated)"
+        detail = f": {body}" if body else ""
+        raise RuntimeError(
+            f"tank_auth preflight failed: GET {url} -> {response.status_code}{detail}"
+        )
+    try:
+        user = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"tank_auth preflight returned non-JSON from {url}") from exc
+    if not isinstance(user, dict):
+        raise RuntimeError(f"tank_auth preflight returned unexpected body from {url}")
+    return {
+        "mode": "tank_caller",
+        "preflight_status": response.status_code,
+        "email": user.get("email"),
+        "role": user.get("role"),
+        "is_admin": user.get("is_admin"),
+        "sub": user.get("sub"),
+        "installation_id": user.get("installation_id"),
+    }
+
+
+def _with_tank_auth_local_storage(
+    local_storage: dict[str, dict[str, str]] | None,
+    origin: str,
+    token: str,
+) -> dict[str, dict[str, str]]:
+    if local_storage is not None and (
+        not isinstance(local_storage, dict)
+        or any(not isinstance(k, str) or not isinstance(v, dict) for k, v in local_storage.items())
+    ):
+        raise ValueError("local_storage must be a dict of origin -> dict of str -> str")
+
+    merged: dict[str, dict[str, str]] = {
+        storage_origin: dict(items)
+        for storage_origin, items in (local_storage or {}).items()
+    }
+    origin_items = merged.setdefault(origin, {})
+    existing = origin_items.get(_TANK_AUTH_STORAGE_KEY)
+    if existing is not None and existing != token:
+        raise ValueError(
+            "tank_auth=True conflicts with local_storage auth-romaine-jwt for "
+            f"{origin}; remove the manual token or set tank_auth=False"
+        )
+    origin_items[_TANK_AUTH_STORAGE_KEY] = token
+    return merged
 
 
 def _lease_label(lease: dict[str, Any]) -> str:
@@ -838,6 +919,7 @@ def register_tools(
         cookies: list[dict[str, Any]] | None = None,
         extra_http_headers: dict[str, str] | None = None,
         local_storage: dict[str, dict[str, str]] | None = None,
+        tank_auth: bool = False,
     ) -> dict[str, Any]:
         """Inspect a live URL with Chromium and return a summary plus
         durable artifact URLs.
@@ -870,30 +952,22 @@ def register_tools(
 
         Auth-injection parameters drive an *authenticated* browse — the
         slot-playwright pod holds no credentials of its own, so the
-        caller is the only source of identity. Three knobs, all forwarded
-        directly to Playwright's `BrowserContext` before `page.goto`:
+        caller is the only source of identity. Four knobs are available:
 
+        - `tank_auth`: when true, use the already-verified inbound
+          auth.romaine.life caller JWT bound by mcp-auth-proxy, preflight
+          it against the inspected URL's `/api/auth/me`, then seed it into
+          `localStorage[auth-romaine-jwt]` for that URL's origin. This is
+          the preferred Tank UI path: no model-visible JWT copy/paste and
+          no projected service-account exchange inside mcp-glimmung.
         - `cookies`: list of Playwright cookie dicts, applied via
-          `context.addCookies`. The tank-operator-slot pattern:
-
-              cookies=[{
-                  "name": "auth_token",
-                  "value": "<minted session jwt>",
-                  "url": "https://tank-operator-slot-1.tank.dev.romaine.life",
-                  "httpOnly": True,
-                  "secure": True,
-                  "sameSite": "Lax",
-              }]
-
-          The session JWT is what the caller gets back from POSTing its
-          `auth.romaine.life` service token to the target slot's
-          `/api/auth/exchange`.
+          `context.addCookies`.
         - `extra_http_headers`: dict applied via
           `context.setExtraHTTPHeaders`. Useful for `Authorization:
           Bearer …` on slot URLs that hit JSON APIs.
         - `local_storage`: dict of `origin -> {key: value}`. Seeded by
           an `addInitScript` that runs before every page script, so
-          SPAs that boot from `localStorage[tank-operator-jwt]` come
+          SPAs that boot from `localStorage[auth-romaine-jwt]` come
           up already signed in.
 
         Detailed schema validation (sameSite enum, url vs. domain
@@ -903,6 +977,16 @@ def register_tools(
         """
         session_id = _tank_session_id(tank_session_id)
         ws_endpoint, project = _resolve_slot_playwright_ws_and_project(client, session_id)
+        auth_diagnostic: dict[str, Any] | None = None
+        if tank_auth:
+            origin = _origin_from_url(url)
+            caller_token = _caller_raw_token()
+            auth_diagnostic = _preflight_tank_auth(origin, caller_token)
+            local_storage = _with_tank_auth_local_storage(
+                local_storage,
+                origin,
+                caller_token,
+            )
         report = inspect_url(
             url=url,
             playwright_ws_endpoint=ws_endpoint,
@@ -919,6 +1003,8 @@ def register_tools(
             extra_http_headers=extra_http_headers,
             local_storage=local_storage,
         )
+        if auth_diagnostic is not None:
+            report["auth"] = auth_diagnostic
         screenshot_path = report.pop("screenshot_path", None)
         if not screenshot_path:
             raise RuntimeError(
@@ -956,7 +1042,7 @@ def register_tools(
                 os.unlink(screenshot_path)
             except FileNotFoundError:
                 pass
-        return summary_view(
+        summary = summary_view(
             report,
             inspection_id=str(response.get("inspection_id") or ""),
             report_url=str(response.get("report_url") or ""),
@@ -968,6 +1054,9 @@ def register_tools(
             max_console_messages=max_console_messages,
             max_network_events=max_network_events,
         )
+        if auth_diagnostic is not None:
+            summary["auth"] = auth_diagnostic
+        return summary
 
     @mcp.tool()
     def register_workflow(
