@@ -1495,6 +1495,34 @@ def test_return_test_slot_posts_return_payload() -> None:
     )
 
 
+def test_return_test_slot_forwards_slot_name_for_orphan_recovery() -> None:
+    # Operator cleanup-retry for an orphaned error+cleanup_error slot is
+    # addressed by slot_name alone (no lease, no session). The tool must
+    # forward slot_name + source so Glimmung can re-drive cleanup; it must
+    # not require a tank_session_id or a slot_index for this path.
+    tools, client = _registered_tools()
+
+    result = tools["return_test_slot"](
+        project="tank-operator",
+        slot_name="tank-operator-slot-1",
+        reason="re-drive cleanup wedged by transient auth outage",
+    )
+
+    assert result["json"] == {
+        "project": "tank-operator",
+        "slot_name": "tank-operator-slot-1",
+        "reason": "re-drive cleanup wedged by transient auth outage",
+        "source": "mcp-glimmung.return_test_slot",
+    }
+    assert "slot_index" not in result["json"]
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/test-slots/return",
+        None,
+        result["json"],
+    )
+
+
 def test_set_test_environment_count_patches_project_count() -> None:
     tools, client = _registered_tools()
 
