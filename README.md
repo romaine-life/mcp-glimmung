@@ -39,3 +39,16 @@ using the environment.
 `prepared_test_slots` are durable slot rows with lifecycle state `available`;
 `available_test_slots` are the subset the Glimmung state projection reports as
 checkout-admissible.
+
+## Authenticated Tank Browser Inspections
+
+`inspect_browser_url` supports `tank_auth=True` for Tank UI pages. The tool
+uses the already-verified inbound `auth.romaine.life` caller JWT, preflights it
+against the inspected origin's `/api/auth/me`, and seeds it into
+`localStorage["auth-romaine-jwt"]` before Playwright navigates. Prefer this for
+Tank slots instead of manually minting, copying, or pasting JWTs.
+
+Manual `cookies`, `extra_http_headers`, and `local_storage` injection remain
+available for non-Tank apps or custom auth setups. If `tank_auth=True` conflicts
+with a caller-provided `local_storage[origin]["auth-romaine-jwt"]`, the tool
+fails fast rather than silently choosing one token.

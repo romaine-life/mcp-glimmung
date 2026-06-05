@@ -1,6 +1,7 @@
 import inspect
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -897,6 +898,158 @@ def test_browser_inspector_tool_forwards_auth_injection(monkeypatch) -> None:
     assert calls[0]["cookies"] == cookies
     assert calls[0]["extra_http_headers"] == headers
     assert calls[0]["local_storage"] == storage
+
+
+def test_browser_inspector_tool_tank_auth_seeds_caller_token(monkeypatch) -> None:
+    tools, client = _registered_tools()
+    calls: list[dict[str, Any]] = []
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "project": "tank-operator",
+                "metadata": {
+                    "tank_session_id": "abc123",
+                    "native_slot_name": "tank-operator-slot-1",
+                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.inspect_url",
+        _fake_inspect_url_returning_path(calls),
+    )
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.current_caller",
+        lambda: SimpleNamespace(raw_token="caller.jwt"),
+    )
+
+    preflight_calls: list[dict[str, Any]] = []
+
+    def fake_get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+        preflight_calls.append({"url": url, "headers": headers, "timeout": timeout})
+        return httpx.Response(
+            200,
+            json={
+                "sub": "svc:tank:609",
+                "email": "pod-609@service.tank.romaine.life",
+                "role": "service",
+                "is_admin": True,
+                "installation_id": None,
+            },
+        )
+
+    monkeypatch.setattr("mcp_glimmung.tools.httpx.get", fake_get)
+
+    result = tools["inspect_browser_url"](
+        "https://tank-operator-slot-1.tank.dev.romaine.life/sessions/46",
+        tank_session_id="abc123",
+        tank_auth=True,
+        local_storage={
+            "https://tank-operator-slot-1.tank.dev.romaine.life": {
+                "theme": "dark",
+            }
+        },
+    )
+
+    assert preflight_calls == [
+        {
+            "url": "https://tank-operator-slot-1.tank.dev.romaine.life/api/auth/me",
+            "headers": {"Authorization": "Bearer caller.jwt"},
+            "timeout": 10.0,
+        }
+    ]
+    assert calls[0]["local_storage"] == {
+        "https://tank-operator-slot-1.tank.dev.romaine.life": {
+            "theme": "dark",
+            "auth-romaine-jwt": "caller.jwt",
+        }
+    }
+    assert result["auth"] == {
+        "mode": "tank_caller",
+        "preflight_status": 200,
+        "email": "pod-609@service.tank.romaine.life",
+        "role": "service",
+        "is_admin": True,
+        "sub": "svc:tank:609",
+        "installation_id": None,
+    }
+    report = client.last_multipart["files"]["report"][1].decode("utf-8")
+    assert "caller.jwt" not in report
+
+
+def test_browser_inspector_tool_tank_auth_rejects_conflicting_storage(
+    monkeypatch,
+) -> None:
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "project": "tank-operator",
+                "metadata": {
+                    "tank_session_id": "abc123",
+                    "native_slot_name": "tank-operator-slot-1",
+                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.current_caller",
+        lambda: SimpleNamespace(raw_token="caller.jwt"),
+    )
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.httpx.get",
+        lambda *_args, **_kwargs: httpx.Response(200, json={"role": "service"}),
+    )
+
+    with pytest.raises(ValueError, match="conflicts with local_storage"):
+        tools["inspect_browser_url"](
+            "https://tank-operator-slot-1.tank.dev.romaine.life/sessions/46",
+            tank_session_id="abc123",
+            tank_auth=True,
+            local_storage={
+                "https://tank-operator-slot-1.tank.dev.romaine.life": {
+                    "auth-romaine-jwt": "different.jwt",
+                }
+            },
+        )
+
+
+def test_browser_inspector_tool_tank_auth_requires_successful_preflight(
+    monkeypatch,
+) -> None:
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "project": "tank-operator",
+                "metadata": {
+                    "tank_session_id": "abc123",
+                    "native_slot_name": "tank-operator-slot-1",
+                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.current_caller",
+        lambda: SimpleNamespace(raw_token="caller.jwt"),
+    )
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.httpx.get",
+        lambda *_args, **_kwargs: httpx.Response(401, text="invalid session token"),
+    )
+
+    with pytest.raises(RuntimeError, match="tank_auth preflight failed"):
+        tools["inspect_browser_url"](
+            "https://tank-operator-slot-1.tank.dev.romaine.life/sessions/46",
+            tank_session_id="abc123",
+            tank_auth=True,
+        )
 
 
 def test_browser_inspector_tool_unlinks_tempfile_on_upload_failure(monkeypatch) -> None:
