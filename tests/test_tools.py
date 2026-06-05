@@ -478,6 +478,58 @@ def test_dispatch_run_hides_backing_lease_id() -> None:
     )
 
 
+def test_synthetic_dispatch_run_posts_strict_payload() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["synthetic_dispatch_run"](
+        issue_number=168,
+        project="ambience",
+        workflow="default",
+        start_at_phase="llm-verify",
+        supplied_phase_outputs=[
+            {
+                "phase": "llm-work",
+                "phase_outputs": {
+                    "branch_name": "glimmung/issue-168-run-11",
+                    "test_plan": "{}",
+                },
+            }
+        ],
+        slot_lease_ref="lease-123",
+        namespace="ambience-slot-3",
+        validation_url="https://ambience-slot-3.example",
+        reason="break-glass retry verification",
+    )
+
+    assert result["path"] == "/v1/runs/synthetic-dispatch"
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/runs/synthetic-dispatch",
+        None,
+        {
+            "project": "ambience",
+            "issue_number": 168,
+            "workflow": "default",
+            "start_at_phase": "llm-verify",
+            "supplied_phase_outputs": [
+                {
+                    "phase": "llm-work",
+                    "phase_outputs": {
+                        "branch_name": "glimmung/issue-168-run-11",
+                        "test_plan": "{}",
+                    },
+                }
+            ],
+            "execution_context": {
+                "slot_lease_ref": "lease-123",
+                "namespace": "ambience-slot-3",
+                "validation_url": "https://ambience-slot-3.example",
+            },
+            "reason": "break-glass retry verification",
+        },
+    )
+
+
 def test_delete_workflow_calls_delete_endpoint() -> None:
     tools, client = _registered_tools()
 
