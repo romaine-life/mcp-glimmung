@@ -1728,14 +1728,28 @@ def register_tools(
         tank_session_id: str | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
-        """Return a checked-out Glimmung native app test slot.
+        """Return a checked-out Glimmung native app test slot, or re-drive
+        cleanup for a slot wedged in a cleanup error.
 
         Returning a test slot tells Glimmung the caller no longer needs the
         leased environment. The server tears down the slot namespace for
         active test-slot checkouts, then releases the reservation. Use
         `slot_index` or `slot_name` for normal MCP use. Pass `tank_session_id`
         to clear Tank's GUI test pill for the session. Pass `reason` when the
-        return is administrative or otherwise non-obvious."""
+        return is administrative or otherwise non-obvious.
+
+        Double duty as the operator cleanup-retry: when addressed by
+        `slot_name`/`slot_index` for a slot orphaned in `error` with a
+        `cleanup_error` and no live lease — the shape a transient
+        cleanup-dependency outage leaves behind (for example the auth token
+        exchange being briefly unreachable during a node upgrade) — Glimmung
+        re-drives runtime cleanup (`error -> cleaning`) and converges the slot
+        back to the available pool, no process restart required. Like a normal
+        return, this is asynchronous: it answers `202` with `state: cleaning`;
+        poll `/v1/state` (or `get_state`) until the slot reports `available`.
+        Ineligible slots (unknown, healthy, or an activation-only `error`
+        without a `cleanup_error`, which belongs to `repair_test_slot`) answer
+        `404` and are unchanged."""
         payload: dict[str, Any] = {"project": project}
         if slot_index is not None:
             payload["slot_index"] = slot_index
