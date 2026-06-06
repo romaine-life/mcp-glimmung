@@ -544,45 +544,6 @@ def test_delete_workflow_calls_delete_endpoint() -> None:
     assert result == {"path": "/v1/workflows/spirelens/issue-agent"}
 
 
-def test_check_project_updates_calls_upstream_endpoint() -> None:
-    tools, client = _registered_tools()
-
-    tools["check_project_updates"](project="glimmung")
-
-    assert client.calls[-1] == (
-        "GET",
-        "/v1/projects/glimmung/upstream",
-        {"ref": "main"},
-        None,
-    )
-
-
-def test_check_project_updates_passes_ref_for_branch_preview() -> None:
-    tools, client = _registered_tools()
-
-    tools["check_project_updates"](project="glimmung", ref="feature/x")
-
-    assert client.calls[-1] == (
-        "GET",
-        "/v1/projects/glimmung/upstream",
-        {"ref": "feature/x"},
-        None,
-    )
-
-
-def test_sync_project_posts_to_sync_endpoint() -> None:
-    tools, client = _registered_tools()
-
-    tools["sync_project"](project="glimmung")
-
-    assert client.calls[-1] == (
-        "POST",
-        "/v1/projects/glimmung/sync",
-        {"ref": "main"},
-        None,
-    )
-
-
 def test_enqueue_signal_posts_drain_loop_payload() -> None:
     tools, client = _registered_tools()
 
