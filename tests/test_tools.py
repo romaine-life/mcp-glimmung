@@ -478,6 +478,45 @@ def test_dispatch_run_hides_backing_lease_id() -> None:
     )
 
 
+def test_dispatch_run_forwards_inputs() -> None:
+    tools, client = _registered_tools()
+
+    def fake_post(
+        path: str,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        client.calls.append(("POST", path, params, json))
+        return {
+            "state": "dispatched",
+            "run_number": 1,
+            "lease_id": "01BACKINGID",
+            "host": "native-k8s",
+        }
+
+    client.post = fake_post  # type: ignore[method-assign]
+
+    result = tools["dispatch_run"](
+        issue_number=168,
+        project="ambience",
+        workflow="branch-input-test",
+        inputs={"git_ref": "codex/lifecycle-observe"},
+    )
+
+    assert result["lease"] == "claimed"
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/runs/dispatch",
+        None,
+        {
+            "project": "ambience",
+            "issue_number": 168,
+            "workflow": "branch-input-test",
+            "inputs": {"git_ref": "codex/lifecycle-observe"},
+        },
+    )
+
+
 def test_synthetic_dispatch_run_posts_strict_payload() -> None:
     tools, client = _registered_tools()
 

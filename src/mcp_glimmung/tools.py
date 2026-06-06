@@ -1535,6 +1535,7 @@ def register_tools(
         issue_number: int,
         project: str,
         workflow: str | None = None,
+        inputs: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Dispatch a Glimmung agent run for an issue and workflow.
 
@@ -1546,6 +1547,8 @@ def register_tools(
         `issue_number` is the project-scoped issue number, e.g.
         `project="glimmung", issue_number=141`. `workflow` is optional and
         only needed if the project has more than one workflow registered.
+        `inputs` is an optional string map passed to workflow templates such as
+        native checkout refs.
 
         Returns the dispatch result: created run number, claimed lease label,
         host, and the GHA workflow_dispatch outcome."""
@@ -1555,6 +1558,8 @@ def register_tools(
         }
         if workflow is not None:
             payload["workflow"] = workflow
+        if inputs is not None:
+            payload["inputs"] = inputs
         return _hide_lease_id(client.post("/v1/runs/dispatch", json=payload))
 
     @mcp.tool()
