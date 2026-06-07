@@ -44,10 +44,27 @@ checkout-admissible.
 
 `synthetic_dispatch_run` wraps Glimmung's break-glass
 `POST /v1/runs/synthetic-dispatch` endpoint. The tool is intentionally strict:
-it does not fetch prior runs, infer skipped phase outputs, provision a test
-slot, or repair workflow shape. Callers must provide `start_at_phase`, a
-claimed `slot_lease_ref`, and every supplied phase output the entrypoint phase
-will need.
+it does not infer skipped phase outputs, provision a test slot, or repair
+workflow shape. Callers must provide `start_at_phase`, a claimed
+`slot_lease_ref`, and every supplied phase output the entrypoint phase will
+need.
+
+For downstream process failures, callers can set `copy_phase_outputs_from` to
+reuse selected outputs from an earlier run on the same issue without rerunning
+agent phases:
+
+```json
+{
+  "run": "17.1",
+  "phases": {
+    "llm-verify": ["verification"]
+  }
+}
+```
+
+Copied phases must be before `start_at_phase`. Explicit
+`supplied_phase_outputs` may add missing keys but may not conflict with copied
+keys.
 
 ## Authenticated Tank Browser Inspections
 

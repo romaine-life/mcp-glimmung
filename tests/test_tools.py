@@ -569,6 +569,55 @@ def test_synthetic_dispatch_run_posts_strict_payload() -> None:
     )
 
 
+def test_synthetic_dispatch_run_posts_copy_phase_outputs_from() -> None:
+    tools, client = _registered_tools()
+
+    tools["synthetic_dispatch_run"](
+        issue_number=168,
+        project="ambience",
+        workflow="default",
+        start_at_phase="touchpoint",
+        copy_phase_outputs_from={
+            "run": "17.1",
+            "phases": {"llm-verify": ["verification"]},
+        },
+        supplied_phase_outputs=[
+            {
+                "phase": "cleanup_early",
+                "phase_outputs": {},
+            }
+        ],
+        slot_lease_ref="lease-123",
+        reason="retry touchpoint without rerunning verifier",
+    )
+
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/runs/synthetic-dispatch",
+        None,
+        {
+            "project": "ambience",
+            "issue_number": 168,
+            "workflow": "default",
+            "start_at_phase": "touchpoint",
+            "copy_phase_outputs_from": {
+                "run": "17.1",
+                "phases": {"llm-verify": ["verification"]},
+            },
+            "supplied_phase_outputs": [
+                {
+                    "phase": "cleanup_early",
+                    "phase_outputs": {},
+                }
+            ],
+            "execution_context": {
+                "slot_lease_ref": "lease-123",
+            },
+            "reason": "retry touchpoint without rerunning verifier",
+        },
+    )
+
+
 def test_delete_workflow_calls_delete_endpoint() -> None:
     tools, client = _registered_tools()
 
