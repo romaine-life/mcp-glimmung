@@ -1571,6 +1571,7 @@ def register_tools(
         slot_lease_ref: str,
         reason: str,
         workflow: str | None = None,
+        copy_phase_outputs_from: dict[str, Any] | None = None,
         namespace: str | None = None,
         validation_url: str | None = None,
         trigger_source: dict[str, Any] | None = None,
@@ -1578,15 +1579,23 @@ def register_tools(
         """Create a break-glass synthetic Glimmung run from caller-supplied facts.
 
         This tool is intentionally strict and unhelpful. It does not fetch old
-        runs, infer missing outputs, provision a test slot, or decide which
-        phases matter. The caller must provide the exact `start_at_phase`, a
-        claimed `slot_lease_ref`, and every skipped phase output that the
-        entrypoint phase needs. Missing or wrong data should fail at the
-        Glimmung API boundary.
+        runs unless explicitly told to copy selected phase outputs, infer
+        missing outputs, provision a test slot, or decide which phases matter.
+        The caller must provide the exact `start_at_phase`, a claimed
+        `slot_lease_ref`, and every skipped phase output that the entrypoint
+        phase needs. Missing or wrong data should fail at the Glimmung API
+        boundary.
 
         `supplied_phase_outputs` is a list of objects shaped like
         `{"phase": "llm-work", "phase_outputs": {"branch_name": "..."}}`.
-        Earlier phases render as supplied, not passed."""
+        Earlier phases render as supplied, not passed.
+
+        `copy_phase_outputs_from` optionally asks Glimmung to copy selected
+        outputs from a prior run on the same issue before applying
+        `supplied_phase_outputs`. Shape:
+        `{"run": "17.1", "phases": {"llm-verify": ["verification"]}}`.
+        Copied phases must be before `start_at_phase`; explicit supplied
+        outputs may add missing keys but cannot conflict with copied keys."""
         payload: dict[str, Any] = {
             "project": project,
             "issue_number": issue_number,
@@ -1597,6 +1606,8 @@ def register_tools(
         }
         if workflow is not None:
             payload["workflow"] = workflow
+        if copy_phase_outputs_from is not None:
+            payload["copy_phase_outputs_from"] = copy_phase_outputs_from
         if namespace is not None:
             payload["execution_context"]["namespace"] = namespace
         if validation_url is not None:
