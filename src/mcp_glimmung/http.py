@@ -51,7 +51,14 @@ from romaine_auth import (
     warn_jwks_unreachable,
 )
 
-from .caller import CALLER_POD_IP, extract_source_pod_ip
+from .caller import (
+    CALLER_KIND_HEADER,
+    CALLER_SESSION_ID,
+    CALLER_SESSION_ID_HEADER,
+    CALLER_SESSION_SCOPE,
+    CALLER_SESSION_SCOPE_HEADER,
+    CALLER_SYSTEM_HEADER,
+)
 from .glimmung_client import GlimmungClient
 from .tank_client import TankClient
 from .tools import register_tools
@@ -64,20 +71,6 @@ log = logging.getLogger(__name__)
 # cross-repo coordinated deploy (mcp-auth-proxy in tank-operator
 # injects the same name).
 CALLER_JWT_HEADER = "X-Auth-Romaine-Token"
-
-
-class CallerPodIPMiddleware(BaseHTTPMiddleware):
-    """Extract caller pod IP from X-Forwarded-For and bind to ContextVar."""
-
-    async def dispatch(self, request: Request, call_next):
-        forwarded_for = request.headers.get("x-forwarded-for")
-        peer_ip = request.client.host if request.client else None
-        pod_ip = extract_source_pod_ip(forwarded_for, peer_ip)
-        token = CALLER_POD_IP.set(pod_ip)
-        try:
-            return await call_next(request)
-        finally:
-            CALLER_POD_IP.reset(token)
 
 
 class CallerJWTMiddleware(BaseHTTPMiddleware):
@@ -123,10 +116,25 @@ class CallerJWTMiddleware(BaseHTTPMiddleware):
                 status_code=503,
             )
 
+        caller_session_id: str | None = None
+        caller_session_scope: str | None = None
+        if (
+            request.headers.get(CALLER_SYSTEM_HEADER, "").strip() == "tank-operator"
+            and request.headers.get(CALLER_KIND_HEADER, "").strip() == "session"
+        ):
+            caller_session_id = request.headers.get(CALLER_SESSION_ID_HEADER, "").strip()
+            caller_session_scope = request.headers.get(
+                CALLER_SESSION_SCOPE_HEADER, ""
+            ).strip()
+
         token_ctx = CALLER.set(caller)
+        session_id_ctx = CALLER_SESSION_ID.set(caller_session_id or None)
+        session_scope_ctx = CALLER_SESSION_SCOPE.set(caller_session_scope or None)
         try:
             return await call_next(request)
         finally:
+            CALLER_SESSION_SCOPE.reset(session_scope_ctx)
+            CALLER_SESSION_ID.reset(session_id_ctx)
             CALLER.reset(token_ctx)
 
 
@@ -178,11 +186,9 @@ def build_app() -> Starlette:
             Mount("/", app=mcp.streamable_http_app()),
         ],
         middleware=[
-            # CallerJWTMiddleware runs first so the resolved Caller is
-            # bound to the ContextVar before downstream handlers (and
-            # CallerPodIPMiddleware) see the request.
+            # CallerJWTMiddleware binds the resolved Caller and trusted Tank
+            # caller context before downstream handlers see the request.
             Middleware(CallerJWTMiddleware, verifier=verifier),
-            Middleware(CallerPodIPMiddleware),
         ],
         lifespan=lifespan,
     )

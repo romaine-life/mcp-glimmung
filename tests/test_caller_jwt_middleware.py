@@ -27,6 +27,14 @@ from romaine_auth import (
     CALLER,
     AuthRomaineLifeVerifier,
 )
+from mcp_glimmung.caller import (
+    CALLER_KIND_HEADER,
+    CALLER_SESSION_ID_HEADER,
+    CALLER_SESSION_SCOPE_HEADER,
+    CALLER_SYSTEM_HEADER,
+    current_tank_session_id,
+    current_tank_session_scope,
+)
 from mcp_glimmung.http import CALLER_JWT_HEADER, CallerJWTMiddleware
 
 
@@ -66,7 +74,9 @@ def _build_app(signing_key, verifier: AuthRomaineLifeVerifier | None = None):
                 "role": caller.role,
                 "actor_email": caller.actor_email,
                 "display_actor": caller.display_actor,
-            }
+            },
+            "tank_session_id": current_tank_session_id(),
+            "tank_session_scope": current_tank_session_scope(),
         })
 
     async def healthz(_: Request) -> JSONResponse:
@@ -124,9 +134,9 @@ def test_valid_service_jwt_binds_actor_email(signing_key):
     token = _mint(
         signing_key,
         role="service",
-        email="pod-session-x@service.tank.romaine.life",
+        email="pod-abc123@service.tank.romaine.life",
         actor_email="USER@example.com",
-        sub="svc:tank:session-x",
+        sub="svc:tank:abc123",
     )
     r = client.get("/whoami", headers={CALLER_JWT_HEADER: token})
     assert r.status_code == 200
@@ -134,6 +144,56 @@ def test_valid_service_jwt_binds_actor_email(signing_key):
     assert body["caller"]["role"] == "service"
     assert body["caller"]["actor_email"] == "user@example.com"
     assert body["caller"]["display_actor"] == "user@example.com"
+    assert body["tank_session_id"] == "abc123"
+    assert body["tank_session_scope"] == "default"
+
+
+def test_tank_caller_headers_override_service_jwt_session(signing_key):
+    client = TestClient(_build_app(signing_key))
+    token = _mint(
+        signing_key,
+        role="service",
+        email="pod-609@service.tank.romaine.life",
+        actor_email="USER@example.com",
+        sub="svc:tank:609",
+    )
+    r = client.get(
+        "/whoami",
+        headers={
+            CALLER_JWT_HEADER: token,
+            CALLER_SYSTEM_HEADER: "tank-operator",
+            CALLER_KIND_HEADER: "session",
+            CALLER_SESSION_ID_HEADER: "session-709",
+            CALLER_SESSION_SCOPE_HEADER: "smoke",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["tank_session_id"] == "709"
+    assert body["tank_session_scope"] == "smoke"
+
+
+def test_tank_caller_headers_require_system_and_kind(signing_key):
+    client = TestClient(_build_app(signing_key))
+    token = _mint(
+        signing_key,
+        role="service",
+        email="pod-609@service.tank.romaine.life",
+        actor_email="USER@example.com",
+        sub="svc:tank:609",
+    )
+    r = client.get(
+        "/whoami",
+        headers={
+            CALLER_JWT_HEADER: token,
+            CALLER_SESSION_ID_HEADER: "session-709",
+            CALLER_SESSION_SCOPE_HEADER: "smoke",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["tank_session_id"] == "609"
+    assert body["tank_session_scope"] == "default"
 
 
 def test_healthz_bypasses_jwt_verification(signing_key):

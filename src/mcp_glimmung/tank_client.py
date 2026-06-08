@@ -54,7 +54,6 @@ class TankClient:
 
     def set_test_environment(
         self,
-        caller_pod_ip: str,
         session_id: str,
         *,
         active: bool = True,
@@ -68,7 +67,6 @@ class TankClient:
             body["url"] = url
         r = httpx.post(
             f"{self._url}/api/internal/sessions/{session_id}/test-state",
-            params={"caller_pod_ip": caller_pod_ip},
             json=body,
             headers=self._headers(),
             timeout=15.0,

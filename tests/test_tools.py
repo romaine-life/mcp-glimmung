@@ -1,5 +1,6 @@
 import inspect
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mcp_glimmung.tools import register_tools
+from mcp_glimmung.caller import CALLER_SESSION_ID
 
 
 class FakeMCP:
@@ -87,7 +89,6 @@ class StubTankClient:
 
     def set_test_environment(
         self,
-        caller_pod_ip: str,
         session_id: str,
         *,
         active: bool = True,
@@ -96,7 +97,6 @@ class StubTankClient:
     ) -> dict[str, Any]:
         self.calls.append(
             {
-                "caller_pod_ip": caller_pod_ip,
                 "session_id": session_id,
                 "active": active,
                 "slot_index": slot_index,
@@ -127,6 +127,15 @@ def _registered_tools() -> tuple[dict[str, Any], StubClient]:
     client = StubClient()
     register_tools(mcp, client)  # type: ignore[arg-type]
     return mcp.tools, client
+
+
+@contextmanager
+def _caller_session(session_id: str):
+    token = CALLER_SESSION_ID.set(session_id)
+    try:
+        yield
+    finally:
+        CALLER_SESSION_ID.reset(token)
 
 
 def _state_with_active_slot(
@@ -918,12 +927,12 @@ def test_browser_inspector_tool_uploads_to_glimmung(monkeypatch) -> None:
         _fake_inspect_url_returning_path(calls),
     )
 
-    result = tools["inspect_browser_url"](
-        "https://example.test/app",
-        tank_session_id="abc123",
-        viewport={"width": 390, "height": 844},
-        wait_ms=100,
-    )
+    with _caller_session("abc123"):
+        result = tools["inspect_browser_url"](
+            "https://example.test/app",
+            viewport={"width": 390, "height": 844},
+            wait_ms=100,
+        )
 
     # Deprecated knobs are gone from the request shape.
     assert "screenshot" not in calls[0]
@@ -988,13 +997,13 @@ def test_browser_inspector_tool_forwards_auth_injection(monkeypatch) -> None:
         }
     }
 
-    tools["inspect_browser_url"](
-        "https://tank-operator-slot-1.tank.dev.romaine.life",
-        tank_session_id="abc123",
-        cookies=cookies,
-        extra_http_headers=headers,
-        local_storage=storage,
-    )
+    with _caller_session("abc123"):
+        tools["inspect_browser_url"](
+            "https://tank-operator-slot-1.tank.dev.romaine.life",
+            cookies=cookies,
+            extra_http_headers=headers,
+            local_storage=storage,
+        )
 
     assert calls[0]["cookies"] == cookies
     assert calls[0]["extra_http_headers"] == headers
@@ -1043,16 +1052,16 @@ def test_browser_inspector_tool_tank_auth_seeds_caller_token(monkeypatch) -> Non
 
     monkeypatch.setattr("mcp_glimmung.tools.httpx.get", fake_get)
 
-    result = tools["inspect_browser_url"](
-        "https://tank-operator-slot-1.tank.dev.romaine.life/sessions/46",
-        tank_session_id="abc123",
-        tank_auth=True,
-        local_storage={
-            "https://tank-operator-slot-1.tank.dev.romaine.life": {
-                "theme": "dark",
-            }
-        },
-    )
+    with _caller_session("abc123"):
+        result = tools["inspect_browser_url"](
+            "https://tank-operator-slot-1.tank.dev.romaine.life/sessions/46",
+            tank_auth=True,
+            local_storage={
+                "https://tank-operator-slot-1.tank.dev.romaine.life": {
+                    "theme": "dark",
+                }
+            },
+        )
 
     assert preflight_calls == [
         {
@@ -1107,16 +1116,16 @@ def test_browser_inspector_tool_tank_auth_rejects_conflicting_storage(
     )
 
     with pytest.raises(ValueError, match="conflicts with local_storage"):
-        tools["inspect_browser_url"](
-            "https://tank-operator-slot-1.tank.dev.romaine.life/sessions/46",
-            tank_session_id="abc123",
-            tank_auth=True,
-            local_storage={
-                "https://tank-operator-slot-1.tank.dev.romaine.life": {
-                    "auth-romaine-jwt": "different.jwt",
-                }
-            },
-        )
+        with _caller_session("abc123"):
+            tools["inspect_browser_url"](
+                "https://tank-operator-slot-1.tank.dev.romaine.life/sessions/46",
+                tank_auth=True,
+                local_storage={
+                    "https://tank-operator-slot-1.tank.dev.romaine.life": {
+                        "auth-romaine-jwt": "different.jwt",
+                    }
+                },
+            )
 
 
 def test_browser_inspector_tool_tank_auth_requires_successful_preflight(
@@ -1146,11 +1155,11 @@ def test_browser_inspector_tool_tank_auth_requires_successful_preflight(
     )
 
     with pytest.raises(RuntimeError, match="tank_auth preflight failed"):
-        tools["inspect_browser_url"](
-            "https://tank-operator-slot-1.tank.dev.romaine.life/sessions/46",
-            tank_session_id="abc123",
-            tank_auth=True,
-        )
+        with _caller_session("abc123"):
+            tools["inspect_browser_url"](
+                "https://tank-operator-slot-1.tank.dev.romaine.life/sessions/46",
+                tank_auth=True,
+            )
 
 
 def test_browser_inspector_tool_unlinks_tempfile_on_upload_failure(monkeypatch) -> None:
@@ -1185,10 +1194,10 @@ def test_browser_inspector_tool_unlinks_tempfile_on_upload_failure(monkeypatch) 
     monkeypatch.setattr(client.__class__, "post_multipart", boom_multipart)
 
     with pytest.raises(RuntimeError, match="simulated upload failure"):
-        tools["inspect_browser_url"](
-            "https://example.test/",
-            tank_session_id="abc123",
-        )
+        with _caller_session("abc123"):
+            tools["inspect_browser_url"](
+                "https://example.test/",
+            )
     # The screenshot tempfile inspect_url created was unlinked in the
     # tool's `finally` even though the upload raised. We can't observe the
     # exact path from here, but the post_multipart raised before any
@@ -1282,12 +1291,12 @@ def test_raise_for_status_is_noop_on_success() -> None:
 def test_checkout_test_slot_posts_checkout_payload() -> None:
     tools, client = _registered_tools()
 
-    result = tools["checkout_test_slot"](
-        project="glimmung",
-        tank_session_id="abc123",
-        workflow="native-agent",
-        ttl_seconds=3600,
-    )
+    with _caller_session("abc123"):
+        result = tools["checkout_test_slot"](
+            project="glimmung",
+            workflow="native-agent",
+            ttl_seconds=3600,
+        )
 
     assert result["path"] == "/v1/test-slots/checkout"
     assert result["json"] == {
@@ -1297,7 +1306,7 @@ def test_checkout_test_slot_posts_checkout_payload() -> None:
             "kind": "tank_session",
             "ref": "tank-operator/session/abc123",
             "label": "abc123",
-            "metadata": {"tank_session_id": "abc123"},
+            "metadata": {"tank_session_id": "abc123", "session_scope": "default"},
         },
         "tank_session_id": "abc123",
         "workflow": "native-agent",
@@ -1316,9 +1325,23 @@ def test_checkout_test_slot_does_not_expose_legacy_selection_knobs() -> None:
 
     signature = inspect.signature(tools["checkout_test_slot"])
 
+    assert "tank_session_id" not in signature.parameters
     assert "slot_index" not in signature.parameters
     assert "mode" not in signature.parameters
     assert "phase_inputs" not in signature.parameters
+
+
+def test_session_owned_slot_tools_do_not_accept_manual_session_id() -> None:
+    tools, _client = _registered_tools()
+
+    for tool_name in (
+        "checkout_test_slot",
+        "inspect_browser_url",
+        "return_test_slot",
+        "extend_test_slot_lease",
+    ):
+        signature = inspect.signature(tools[tool_name])
+        assert "tank_session_id" not in signature.parameters
 
 
 def test_checkout_test_slot_updates_tank_session_on_assigned_slot() -> None:
@@ -1345,20 +1368,14 @@ def test_checkout_test_slot_updates_tank_session_on_assigned_slot() -> None:
 
     client = CheckoutClient()
     register_tools(mcp, client, tank)  # type: ignore[arg-type]
-    from mcp_glimmung.caller import CALLER_POD_IP
 
-    token = CALLER_POD_IP.set("10.0.0.42")
-    try:
+    with _caller_session("abc123"):
         result = mcp.tools["checkout_test_slot"](
             project="tank-operator",
-            tank_session_id="abc123",
         )
-    finally:
-        CALLER_POD_IP.reset(token)
 
     assert tank.calls == [
         {
-            "caller_pod_ip": "10.0.0.42",
             "session_id": "abc123",
             "active": True,
             "slot_index": 2,
@@ -1370,7 +1387,7 @@ def test_checkout_test_slot_updates_tank_session_on_assigned_slot() -> None:
     assert result["tank_session_url"] == "https://tank.example.test/?session=abc123"
 
 
-def test_checkout_test_slot_accepts_session_pod_name_for_tank_callback() -> None:
+def test_checkout_test_slot_normalizes_caller_session_pod_name() -> None:
     mcp = FakeMCP()
     tank = StubTankClient()
 
@@ -1394,16 +1411,11 @@ def test_checkout_test_slot_accepts_session_pod_name_for_tank_callback() -> None
 
     client = CheckoutClient()
     register_tools(mcp, client, tank)  # type: ignore[arg-type]
-    from mcp_glimmung.caller import CALLER_POD_IP
 
-    token = CALLER_POD_IP.set("10.0.0.42")
-    try:
+    with _caller_session("session-9190aa98a2"):
         result = mcp.tools["checkout_test_slot"](
             project="glimmung",
-            tank_session_id="session-9190aa98a2",
         )
-    finally:
-        CALLER_POD_IP.reset(token)
 
     payload = client.calls[-1][3]
     assert payload is not None
@@ -1436,16 +1448,11 @@ def test_checkout_test_slot_uses_server_returned_slot_url_for_tank_callback() ->
             }
 
     register_tools(mcp, CheckoutClient(), tank)  # type: ignore[arg-type]
-    from mcp_glimmung.caller import CALLER_POD_IP
 
-    token = CALLER_POD_IP.set("10.0.0.42")
-    try:
+    with _caller_session("9190aa98a2"):
         mcp.tools["checkout_test_slot"](
             project="glimmung",
-            tank_session_id="9190aa98a2",
         )
-    finally:
-        CALLER_POD_IP.reset(token)
 
     assert tank.calls[0]["url"] == "https://glimmung-1.glimmung.dev.romaine.life"
 
@@ -1472,16 +1479,11 @@ def test_checkout_test_slot_returns_lease_when_tank_callback_fails() -> None:
             }
 
     register_tools(mcp, CheckoutClient(), FailingTankClient())  # type: ignore[arg-type]
-    from mcp_glimmung.caller import CALLER_POD_IP
 
-    token = CALLER_POD_IP.set("10.0.0.42")
-    try:
+    with _caller_session("missing"):
         result = mcp.tools["checkout_test_slot"](
             project="glimmung",
-            tank_session_id="missing",
         )
-    finally:
-        CALLER_POD_IP.reset(token)
 
     assert result["lease"] == "glimmung-1"
     assert "tank_test_state_error" in result
@@ -1510,10 +1512,10 @@ def test_checkout_test_slot_reports_missing_server_url_without_guessing() -> Non
 
     register_tools(mcp, CheckoutClient(), tank)  # type: ignore[arg-type]
 
-    result = mcp.tools["checkout_test_slot"](
-        project="glimmung",
-        tank_session_id="9190aa98a2",
-    )
+    with _caller_session("9190aa98a2"):
+        result = mcp.tools["checkout_test_slot"](
+            project="glimmung",
+        )
 
     assert tank.calls == []
     assert result["lease"] == "glimmung-1"
@@ -1523,17 +1525,19 @@ def test_checkout_test_slot_reports_missing_server_url_without_guessing() -> Non
 def test_return_test_slot_posts_return_payload() -> None:
     tools, client = _registered_tools()
 
-    result = tools["return_test_slot"](
-        project="glimmung",
-        slot_index=2,
-        slot_name="glimmung-slot-2",
-    )
+    with _caller_session("abc123"):
+        result = tools["return_test_slot"](
+            project="glimmung",
+            slot_index=2,
+            slot_name="glimmung-slot-2",
+        )
 
     assert result["path"] == "/v1/test-slots/return"
     assert result["json"] == {
         "project": "glimmung",
         "slot_index": 2,
         "slot_name": "glimmung-slot-2",
+        "caller_session_id": "abc123",
         "source": "mcp-glimmung.return_test_slot",
     }
     assert client.calls[-1] == (
@@ -1546,20 +1550,22 @@ def test_return_test_slot_posts_return_payload() -> None:
 
 def test_return_test_slot_forwards_slot_name_for_orphan_recovery() -> None:
     # Operator cleanup-retry for an orphaned error+cleanup_error slot is
-    # addressed by slot_name alone (no lease, no session). The tool must
-    # forward slot_name + source so Glimmung can re-drive cleanup; it must
-    # not require a tank_session_id or a slot_index for this path.
+    # addressed by slot_name. The tool must forward slot_name + source so
+    # Glimmung can re-drive cleanup; the caller session is attributed from
+    # trusted context rather than a model-supplied tank_session_id.
     tools, client = _registered_tools()
 
-    result = tools["return_test_slot"](
-        project="tank-operator",
-        slot_name="tank-operator-slot-1",
-        reason="re-drive cleanup wedged by transient auth outage",
-    )
+    with _caller_session("abc123"):
+        result = tools["return_test_slot"](
+            project="tank-operator",
+            slot_name="tank-operator-slot-1",
+            reason="re-drive cleanup wedged by transient auth outage",
+        )
 
     assert result["json"] == {
         "project": "tank-operator",
         "slot_name": "tank-operator-slot-1",
+        "caller_session_id": "abc123",
         "reason": "re-drive cleanup wedged by transient auth outage",
         "source": "mcp-glimmung.return_test_slot",
     }
@@ -1630,13 +1636,13 @@ def test_repair_test_slot_requires_slot_name() -> None:
 def test_extend_test_slot_lease_posts_extend_payload() -> None:
     tools, client = _registered_tools()
 
-    result = tools["extend_test_slot_lease"](
-        project="glimmung",
-        tank_session_id="session-abc123",
-        extend_seconds=1800,
-        slot_name="glimmung-slot-2",
-        reason="still validating",
-    )
+    with _caller_session("session-abc123"):
+        result = tools["extend_test_slot_lease"](
+            project="glimmung",
+            extend_seconds=1800,
+            slot_name="glimmung-slot-2",
+            reason="still validating",
+        )
 
     assert result["path"] == "/v1/test-slots/extend"
     assert result["json"] == {
@@ -1659,21 +1665,15 @@ def test_return_test_slot_clears_tank_session_when_requested() -> None:
     mcp = FakeMCP()
     tank = StubTankClient()
     register_tools(mcp, StubClient(), tank)  # type: ignore[arg-type]
-    from mcp_glimmung.caller import CALLER_POD_IP
 
-    token = CALLER_POD_IP.set("10.0.0.42")
-    try:
+    with _caller_session("abc123"):
         result = mcp.tools["return_test_slot"](
             project="tank-operator",
             slot_index=2,
-            tank_session_id="abc123",
         )
-    finally:
-        CALLER_POD_IP.reset(token)
 
     assert tank.calls == [
         {
-            "caller_pod_ip": "10.0.0.42",
             "session_id": "abc123",
             "active": False,
             "slot_index": None,
@@ -1681,7 +1681,6 @@ def test_return_test_slot_clears_tank_session_when_requested() -> None:
         }
     ]
     assert result["tank_test_state"] is None
-    assert result["json"]["caller_pod_ip"] == "10.0.0.42"
     assert result["json"]["caller_session_id"] == "abc123"
 
 
@@ -1746,10 +1745,10 @@ def test_inspect_browser_url_resolves_lease_with_requester_metadata_shape(monkey
         "mcp_glimmung.tools.inspect_url",
         _fake_inspect_url_returning_path(calls),
     )
-    result = tools["inspect_browser_url"](
-        url="https://example.test/",
-        tank_session_id="abc123",
-    )
+    with _caller_session("abc123"):
+        result = tools["inspect_browser_url"](
+            url="https://example.test/",
+        )
     assert result["final_url"] == "https://example.test/"
     assert result["scope"] == "lease"
 
@@ -1759,10 +1758,10 @@ def test_inspect_browser_url_errors_when_session_has_no_lease() -> None:
     client.responses[("GET", "/v1/state")] = {"active_leases": []}
 
     with pytest.raises(RuntimeError, match="no active test-slot lease"):
-        tools["inspect_browser_url"](
-            url="https://example.test/",
-            tank_session_id="abc123",
-        )
+        with _caller_session("abc123"):
+            tools["inspect_browser_url"](
+                url="https://example.test/",
+            )
 
 
 def test_inspect_browser_url_errors_when_lease_has_no_ws_endpoint() -> None:
@@ -1777,10 +1776,10 @@ def test_inspect_browser_url_errors_when_lease_has_no_ws_endpoint() -> None:
     }
 
     with pytest.raises(RuntimeError, match="no playwright_ws_endpoint"):
-        tools["inspect_browser_url"](
-            url="https://example.test/",
-            tank_session_id="abc123",
-        )
+        with _caller_session("abc123"):
+            tools["inspect_browser_url"](
+                url="https://example.test/",
+            )
 
 
 def test_inspect_browser_url_forwards_endpoint_from_active_lease(
@@ -1806,10 +1805,10 @@ def test_inspect_browser_url_forwards_endpoint_from_active_lease(
         _fake_inspect_url_returning_path(calls),
     )
 
-    result = tools["inspect_browser_url"](
-        url="https://example.test/",
-        tank_session_id="abc123",
-    )
+    with _caller_session("abc123"):
+        result = tools["inspect_browser_url"](
+            url="https://example.test/",
+        )
 
     assert result["final_url"] == "https://example.test/"
     assert (

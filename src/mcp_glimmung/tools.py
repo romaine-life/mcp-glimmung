@@ -19,23 +19,12 @@ from .browser_inspector import (
     inspect_url,
     summary_view,
 )
-from .caller import current_caller_pod_ip
+from .caller import current_tank_session_scope, require_tank_session_id
 from .glimmung_client import GlimmungClient
 from .tank_client import TankClient
 
-_CALLER_MISSING_MSG = (
-    "could not identify caller from pod IP - make sure you're calling from "
-    "inside a tank-operator session pod"
-)
 log = logging.getLogger(__name__)
 _TANK_AUTH_STORAGE_KEY = "auth-romaine-jwt"
-
-
-def _pod_ip() -> str:
-    ip = current_caller_pod_ip()
-    if not ip:
-        raise ValueError(_CALLER_MISSING_MSG)
-    return ip
 
 
 def _tank_session_id(value: str) -> str:
@@ -904,7 +893,6 @@ def register_tools(
     @mcp.tool()
     def inspect_browser_url(
         url: str,
-        tank_session_id: str,
         viewport: dict[str, int] | None = None,
         wait_ms: int = 2000,
         timeout_ms: int = 30000,
@@ -926,8 +914,9 @@ def register_tools(
 
         Runs inside the active test slot's `slot-playwright` pod, so callers
         must hold a checked-out test slot via `checkout_test_slot` first.
-        The slot's Playwright drives the browser; the MCP host does not.
-        Pass the Tank session id whose lease should be used.
+        The slot's Playwright drives the browser; the MCP host does not. The
+        Tank session lease is derived from trusted caller context, not from a
+        model-supplied argument.
 
         The screenshot PNG and the full structured inspection report are
         uploaded to glimmung via `POST /v1/inspections` and live under
@@ -975,7 +964,7 @@ def register_tools(
         is more precise than anything this wrapper can pre-validate
         and it bubbles up through the subprocess stderr.
         """
-        session_id = _tank_session_id(tank_session_id)
+        session_id = require_tank_session_id()
         ws_endpoint, project = _resolve_slot_playwright_ws_and_project(client, session_id)
         auth_diagnostic: dict[str, Any] | None = None
         if tank_auth:
@@ -1619,7 +1608,6 @@ def register_tools(
     @mcp.tool()
     def checkout_test_slot(
         project: str,
-        tank_session_id: str,
         workflow: str | None = None,
         ttl_seconds: int | None = None,
     ) -> dict[str, Any]:
@@ -1637,15 +1625,25 @@ def register_tools(
         `get_state` until the slot is `active` and `usable` before relying on
         the environment.
 
-        `tank_session_id` is required so Tank's UI can mark the requesting
-        session with the leased environment number and URL."""
-        normalized_tank_session_id = _tank_session_id(tank_session_id)
+        Tank's session identity is derived from trusted caller context so the
+        UI can mark the requesting session with the leased environment number
+        and URL."""
+        normalized_tank_session_id = require_tank_session_id()
+        session_scope = current_tank_session_scope() or "default"
+        session_ref = f"tank-operator/session/{normalized_tank_session_id}"
+        if session_scope != "default":
+            session_ref = (
+                f"tank-operator/{session_scope}/session/{normalized_tank_session_id}"
+            )
         requester = {
             "consumer": "tank-operator",
             "kind": "tank_session",
-            "ref": f"tank-operator/session/{normalized_tank_session_id}",
+            "ref": session_ref,
             "label": normalized_tank_session_id,
-            "metadata": {"tank_session_id": normalized_tank_session_id},
+            "metadata": {
+                "tank_session_id": normalized_tank_session_id,
+                "session_scope": session_scope,
+            },
         }
         payload: dict[str, Any] = {
             "project": project,
@@ -1669,7 +1667,6 @@ def register_tools(
             else:
                 try:
                     tank_state = tank_client.set_test_environment(
-                        _pod_ip(),
                         session_id=normalized_tank_session_id,
                         active=True,
                         slot_index=result.get("slot_index"),
@@ -1691,7 +1688,6 @@ def register_tools(
         project: str,
         slot_index: int | None = None,
         slot_name: str | None = None,
-        tank_session_id: str | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
         """Return a checked-out Glimmung native app test slot, or re-drive
@@ -1700,9 +1696,10 @@ def register_tools(
         Returning a test slot tells Glimmung the caller no longer needs the
         leased environment. The server tears down the slot namespace for
         active test-slot checkouts, then releases the reservation. Use
-        `slot_index` or `slot_name` for normal MCP use. Pass `tank_session_id`
-        to clear Tank's GUI test pill for the session. Pass `reason` when the
-        return is administrative or otherwise non-obvious.
+        `slot_index` or `slot_name` for normal MCP use. The caller Tank session
+        is derived from trusted context and is used to clear Tank's GUI test
+        pill. Pass `reason` when the return is administrative or otherwise
+        non-obvious.
 
         Double duty as the operator cleanup-retry: when addressed by
         `slot_name`/`slot_index` for a slot orphaned in `error` with a
@@ -1721,31 +1718,26 @@ def register_tools(
             payload["slot_index"] = slot_index
         if slot_name is not None:
             payload["slot_name"] = slot_name
-        caller_pod_ip = current_caller_pod_ip()
-        if caller_pod_ip:
-            payload["caller_pod_ip"] = caller_pod_ip
-        if tank_session_id is not None:
-            payload["caller_session_id"] = _tank_session_id(tank_session_id)
+        caller_session_id = require_tank_session_id()
+        payload["caller_session_id"] = caller_session_id
         if reason is not None:
             payload["reason"] = reason
         payload["source"] = "mcp-glimmung.return_test_slot"
         log.info(
             "mcp tool return_test_slot project=%s slot_index=%s slot_name=%s "
-            "tank_session_id=%s caller_pod_ip=%s reason=%s",
+            "caller_session_id=%s reason=%s",
             project,
             slot_index,
             slot_name,
-            _tank_session_id(tank_session_id) if tank_session_id is not None else None,
-            caller_pod_ip,
+            caller_session_id,
             reason,
         )
         result = client.post("/v1/test-slots/return", json=payload)
         tank_state = None
-        if tank_client is not None and tank_session_id is not None:
+        if tank_client is not None:
             try:
                 tank_state = tank_client.set_test_environment(
-                    _pod_ip(),
-                    session_id=_tank_session_id(tank_session_id),
+                    session_id=caller_session_id,
                     active=False,
                 )
             except (httpx.HTTPError, RuntimeError, ValueError) as exc:
@@ -1806,7 +1798,6 @@ def register_tools(
     @mcp.tool()
     def extend_test_slot_lease(
         project: str,
-        tank_session_id: str,
         extend_seconds: int = 3600,
         slot_index: int | None = None,
         slot_name: str | None = None,
@@ -1817,10 +1808,10 @@ def register_tools(
         Use this when the current Tank session still needs its leased test
         environment. The server updates the durable lease TTL and re-arms the
         test-slot expiry timer, so the extension survives Glimmung restarts.
-        Pass `tank_session_id` to prove the session owns the checkout. Use
-        `slot_index` or `slot_name` only when the session may hold more than
-        one slot or the target should be explicit."""
-        normalized_tank_session_id = _tank_session_id(tank_session_id)
+        The Tank session is derived from trusted caller context. Use `slot_index`
+        or `slot_name` only when the session may hold more than one slot or the
+        target should be explicit."""
+        normalized_tank_session_id = require_tank_session_id()
         payload: dict[str, Any] = {
             "project": project,
             "tank_session_id": normalized_tank_session_id,
@@ -1831,21 +1822,17 @@ def register_tools(
             payload["slot_index"] = slot_index
         if slot_name is not None:
             payload["slot_name"] = slot_name
-        caller_pod_ip = current_caller_pod_ip()
-        if caller_pod_ip:
-            payload["caller_pod_ip"] = caller_pod_ip
         if reason is not None:
             payload["reason"] = reason
         log.info(
             "mcp tool extend_test_slot_lease project=%s slot_index=%s "
             "slot_name=%s tank_session_id=%s extend_seconds=%s "
-            "caller_pod_ip=%s reason=%s",
+            "reason=%s",
             project,
             slot_index,
             slot_name,
             normalized_tank_session_id,
             extend_seconds,
-            caller_pod_ip,
             reason,
         )
         return _hide_lease_id(client.post("/v1/test-slots/extend", json=payload))
