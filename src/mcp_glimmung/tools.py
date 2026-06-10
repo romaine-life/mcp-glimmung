@@ -1056,6 +1056,7 @@ def register_tools(
         budget: dict[str, Any] | None = None,
         trigger_label: str | None = None,
         default_requirements: dict[str, Any] | None = None,
+        dispatch_inputs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Create or replace a Glimmung workflow registration, including phases, PR policy, budget, and triggers.
 
@@ -1079,7 +1080,18 @@ def register_tools(
         PrPrimitiveSpec dict (`enabled`, `recycle_policy`); omit for the
         default disabled primitive. `budget` is `{"total": float}`
         (default 25.0). Pair with `patch_workflow` for live rollout-knob
-        flips that don't need a full re-register."""
+        flips that don't need a full re-register.
+
+        `dispatch_inputs` declares the per-dispatch input contract. Each
+        entry is `{name, description?, required?, default?}`. Every
+        `${{ inputs.X }}` reference inside any native job's `checkout.ref`,
+        `extra_checkouts[].ref`, or phase `workflow_ref` must name a
+        declared input — the server rejects undeclared template refs at
+        register time and rejects missing-required / undeclared values at
+        dispatch time. A required input may carry a `default` so a no-input
+        dispatch succeeds; a non-required input must declare a non-empty
+        `default`. See `glimmung/docs/workflow-shape.md` → "Dispatch
+        inputs"."""
         payload: dict[str, Any] = {
             "project": project,
             "name": name,
@@ -1093,6 +1105,8 @@ def register_tools(
             payload["budget"] = budget
         if default_requirements is not None:
             payload["default_requirements"] = default_requirements
+        if dispatch_inputs is not None:
+            payload["dispatch_inputs"] = dispatch_inputs
         return client.post("/v1/workflows", json=payload)
 
     @mcp.tool()
