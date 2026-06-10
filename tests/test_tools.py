@@ -1815,3 +1815,53 @@ def test_inspect_browser_url_forwards_endpoint_from_active_lease(
         calls[0]["playwright_ws_endpoint"]
         == "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000"
     )
+
+
+def test_register_workflow_forwards_dispatch_inputs_to_v1_workflows() -> None:
+    """The MCP wrapper must surface dispatch_inputs as a first-class
+    parameter so callers can declare the per-dispatch input contract on
+    the workflow registration. Passing it through is what makes the
+    server-side validator's `${{ inputs.X }}` requirement satisfiable
+    from MCP callers without dropping to raw HTTP."""
+    tools, client = _registered_tools()
+
+    result = tools["register_workflow"](
+        project="ambience",
+        name="default",
+        phases=[{"name": "prepare"}],
+        dispatch_inputs=[
+            {
+                "name": "git_ref",
+                "description": "branch or sha to check out",
+                "required": True,
+                "default": "main",
+            }
+        ],
+    )
+
+    assert result["path"] == "/v1/workflows"
+    body = result["json"]
+    assert body["dispatch_inputs"] == [
+        {
+            "name": "git_ref",
+            "description": "branch or sha to check out",
+            "required": True,
+            "default": "main",
+        }
+    ]
+
+
+def test_register_workflow_omits_dispatch_inputs_when_unset() -> None:
+    """Backward compatibility: a register_workflow call that doesn't
+    pass dispatch_inputs must not put the key in the request body, so
+    older registrations that don't need any inputs keep the same wire
+    shape."""
+    tools, client = _registered_tools()
+
+    result = tools["register_workflow"](
+        project="ambience",
+        name="default",
+        phases=[{"name": "prepare"}],
+    )
+
+    assert "dispatch_inputs" not in (result["json"] or {})
