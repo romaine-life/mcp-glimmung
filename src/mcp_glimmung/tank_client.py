@@ -73,3 +73,32 @@ class TankClient:
         )
         _check(r)
         return r.json()
+
+    def upload_session_file(
+        self,
+        session_id: str,
+        *,
+        name: str,
+        content_type: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        """Upload bytes into a Tank session workspace.
+
+        Tank's raw upload endpoint stores image content under
+        `/workspace/screenshots/<n>.<ext>` and returns both relative and
+        absolute paths. The caller session id is trusted context from the
+        mcp-auth-proxy; callers cannot use this helper to target another
+        workspace unless Tank's own ownership checks allow it.
+        """
+        r = httpx.post(
+            f"{self._url}/api/sessions/{session_id}/files/upload",
+            params={"name": name},
+            content=data,
+            headers={
+                **self._headers(),
+                "Content-Type": content_type,
+            },
+            timeout=30.0,
+        )
+        _check(r)
+        return r.json()
