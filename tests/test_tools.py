@@ -1976,6 +1976,41 @@ def test_register_workflow_omits_dispatch_inputs_when_unset() -> None:
     assert "dispatch_inputs" not in (result["json"] or {})
 
 
+def test_register_workflow_forwards_vars_to_v1_workflows() -> None:
+    """The MCP wrapper must surface `vars` as a first-class parameter so
+    callers can declare the registration-owned variable map that phase-
+    and job-level `when` conditions reference. Without the passthrough,
+    a conditional workflow shape is unregistrable from MCP callers."""
+    tools, client = _registered_tools()
+
+    result = tools["register_workflow"](
+        project="ambience",
+        name="default",
+        phases=[{"name": "prepare"}],
+        vars={"feature_type": "effect", "issue_contract": "off"},
+    )
+
+    assert result["path"] == "/v1/workflows"
+    assert result["json"]["vars"] == {
+        "feature_type": "effect",
+        "issue_contract": "off",
+    }
+
+
+def test_register_workflow_omits_vars_when_unset() -> None:
+    """A register_workflow call without vars must not put the key in the
+    request body, keeping unconditional registrations' wire shape stable."""
+    tools, client = _registered_tools()
+
+    result = tools["register_workflow"](
+        project="ambience",
+        name="default",
+        phases=[{"name": "prepare"}],
+    )
+
+    assert "vars" not in (result["json"] or {})
+
+
 def test_pin_workflow_control_puts_target_with_reason() -> None:
     """Pinning rides PUT /control-pins/{target} with the trimmed reason in
     the body; an empty reason stays out of the payload so the server's
