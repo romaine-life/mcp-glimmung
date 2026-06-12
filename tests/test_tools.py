@@ -41,6 +41,10 @@ class StubClient:
         self.calls.append(("PATCH", path, None, json))
         return {"path": path, "json": json}
 
+    def put(self, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.calls.append(("PUT", path, None, json))
+        return {"path": path, "json": json}
+
     def delete(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self.calls.append(("DELETE", path, params, None))
         if ("DELETE", path) in self.responses:
@@ -1865,3 +1869,57 @@ def test_register_workflow_omits_dispatch_inputs_when_unset() -> None:
     )
 
     assert "dispatch_inputs" not in (result["json"] or {})
+
+
+def test_pin_workflow_control_puts_target_with_reason() -> None:
+    """Pinning rides PUT /control-pins/{target} with the trimmed reason in
+    the body; an empty reason stays out of the payload so the server's
+    omitempty semantics hold."""
+    tools, client = _registered_tools()
+
+    result = tools["pin_workflow_control"](
+        project="ambience",
+        name="default",
+        target="phases.llm-verify.recycle_policy",
+        reason="  systemic verify fails must not recycle  ",
+    )
+
+    assert result["path"] == "/v1/workflows/ambience/default/control-pins/phases.llm-verify.recycle_policy"
+    assert result["json"] == {"reason": "systemic verify fails must not recycle"}
+
+    result = tools["pin_workflow_control"](
+        project="ambience",
+        name="default",
+        target="budget",
+    )
+    assert result["json"] == {}
+
+
+def test_unpin_workflow_control_deletes_target() -> None:
+    tools, client = _registered_tools()
+
+    tools["unpin_workflow_control"](
+        project="ambience",
+        name="default",
+        target="pr.recycle_policy",
+    )
+
+    assert client.calls[-1] == (
+        "DELETE",
+        "/v1/workflows/ambience/default/control-pins/pr.recycle_policy",
+        None,
+        None,
+    )
+
+
+def test_list_workflow_control_events_gets_ledger_with_limit() -> None:
+    tools, client = _registered_tools()
+
+    tools["list_workflow_control_events"](project="ambience", name="default", limit=5)
+
+    assert client.calls[-1] == (
+        "GET",
+        "/v1/workflows/ambience/default/control-events",
+        {"limit": 5},
+        None,
+    )

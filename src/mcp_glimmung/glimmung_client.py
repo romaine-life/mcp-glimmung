@@ -20,9 +20,19 @@ import httpx
 
 from romaine_auth import current_caller
 
+from .caller import current_tank_session_id
+
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "http://glimmung.glimmung.svc"
+
+# Forwarded attribution detail for glimmung's workflow control ledger. The
+# caller's JWT is already the authenticated principal; this header refines it
+# with the Tank session identity the mcp-auth-proxy bound for this request,
+# so ledger rows read "svc:... via tank-session:815" instead of a bare
+# service subject. Glimmung records it; it never replaces the verified
+# principal.
+ACTOR_HEADER = "X-Glimmung-Actor"
 
 
 def _raise_for_status(r: httpx.Response) -> None:
@@ -74,7 +84,11 @@ class GlimmungClient:
                 "no current_caller() bound; "
                 "CallerJWTMiddleware should have 401'd this request"
             )
-        return {"Authorization": f"Bearer {caller.raw_token}"}
+        headers = {"Authorization": f"Bearer {caller.raw_token}"}
+        session_id = current_tank_session_id()
+        if session_id:
+            headers[ACTOR_HEADER] = f"tank-session:{session_id}"
+        return headers
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         r = self._http.get(self._base_url + path, params=params, headers=self._headers())
@@ -83,6 +97,11 @@ class GlimmungClient:
 
     def patch(self, path: str, json: dict[str, Any]) -> Any:
         r = self._http.patch(self._base_url + path, json=json, headers=self._headers())
+        _raise_for_status(r)
+        return r.json()
+
+    def put(self, path: str, json: dict[str, Any] | None = None) -> Any:
+        r = self._http.put(self._base_url + path, json=json, headers=self._headers())
         _raise_for_status(r)
         return r.json()
 
