@@ -78,3 +78,10 @@ Manual `cookies`, `extra_http_headers`, and `local_storage` injection remain
 available for non-Tank apps or custom auth setups. If `tank_auth=True` conflicts
 with a caller-provided `local_storage[origin]["auth-romaine-jwt"]`, the tool
 fails fast rather than silently choosing one token.
+
+When an inspection screenshot is user-facing evidence, pass
+`save_screenshot_to_workspace=True`. The MCP server uploads the same PNG bytes
+through Tank's session file API, which stores image uploads under
+`/workspace/screenshots/` and returns the saved path in
+`workspace_screenshot`. `workspace_screenshot_name` only labels the upload;
+Tank still chooses the collision-safe final filename.

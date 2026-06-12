@@ -118,6 +118,30 @@ class StubTankClient:
             else None,
         }
 
+    def upload_session_file(
+        self,
+        session_id: str,
+        *,
+        name: str,
+        content_type: str,
+        data: bytes,
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "kind": "upload_session_file",
+                "session_id": session_id,
+                "name": name,
+                "content_type": content_type,
+                "data": data,
+            }
+        )
+        return {
+            "path": "screenshots/1.png",
+            "abs_path": "/workspace/screenshots/1.png",
+            "name": name,
+            "size": len(data),
+        }
+
 
 class FailingTankClient(StubTankClient):
     def set_test_environment(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -961,6 +985,87 @@ def test_browser_inspector_tool_uploads_to_glimmung(monkeypatch) -> None:
     assert result["scope"] == "lease"
     assert result["scope_ref"] == "lease-1"
     assert result["final_url"] == "https://example.test/app"
+
+
+def test_browser_inspector_tool_can_save_screenshot_to_workspace(monkeypatch) -> None:
+    mcp = FakeMCP()
+    client = StubClient()
+    tank = StubTankClient()
+    register_tools(mcp, client, tank)  # type: ignore[arg-type]
+    tools = mcp.tools
+    calls: list[dict[str, Any]] = []
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "project": "tank-operator",
+                "metadata": {
+                    "tank_session_id": "abc123",
+                    "native_slot_name": "tank-operator-slot-1",
+                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.inspect_url",
+        _fake_inspect_url_returning_path(calls),
+    )
+
+    with _caller_session("abc123"):
+        result = tools["inspect_browser_url"](
+            "https://example.test/app",
+            wait_ms=100,
+            save_screenshot_to_workspace=True,
+            workspace_screenshot_name="origin-avatar-validation.png",
+        )
+
+    assert tank.calls[-1] == {
+        "kind": "upload_session_file",
+        "session_id": "abc123",
+        "name": "origin-avatar-validation.png",
+        "content_type": "image/png",
+        "data": b"PNG",
+    }
+    assert result["workspace_screenshot"] == {
+        "path": "screenshots/1.png",
+        "abs_path": "/workspace/screenshots/1.png",
+        "name": "origin-avatar-validation.png",
+        "size": 3,
+    }
+    assert result["screenshot_url"].endswith("/screenshot.png")
+
+
+def test_browser_inspector_tool_requires_tank_client_for_workspace_save(
+    monkeypatch,
+) -> None:
+    tools, client = _registered_tools()
+    calls: list[dict[str, Any]] = []
+    client.responses[("GET", "/v1/state")] = {
+        "active_leases": [
+            {
+                "id": "lease-1",
+                "project": "tank-operator",
+                "metadata": {
+                    "tank_session_id": "abc123",
+                    "native_slot_name": "tank-operator-slot-1",
+                    "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
+                },
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        "mcp_glimmung.tools.inspect_url",
+        _fake_inspect_url_returning_path(calls),
+    )
+
+    with pytest.raises(RuntimeError, match="requires a TankClient"):
+        with _caller_session("abc123"):
+            tools["inspect_browser_url"](
+                "https://example.test/app",
+                save_screenshot_to_workspace=True,
+            )
+    assert calls == []
 
 
 def test_browser_inspector_tool_forwards_auth_injection(monkeypatch) -> None:

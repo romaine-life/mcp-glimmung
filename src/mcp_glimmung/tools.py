@@ -908,6 +908,8 @@ def register_tools(
         extra_http_headers: dict[str, str] | None = None,
         local_storage: dict[str, dict[str, str]] | None = None,
         tank_auth: bool = False,
+        save_screenshot_to_workspace: bool = False,
+        workspace_screenshot_name: str | None = None,
     ) -> dict[str, Any]:
         """Inspect a live URL with Chromium and return a summary plus
         durable artifact URLs.
@@ -939,6 +941,14 @@ def register_tools(
         step canonicalizes `inspections/` refs into Touchpoint evidence
         without any new caller-facing promotion API.
 
+        When `save_screenshot_to_workspace=True`, the screenshot PNG is also
+        uploaded into the caller Tank session's workspace through Tank's
+        normal file upload endpoint. Tank stores image uploads under
+        `/workspace/screenshots/` and returns the exact path in
+        `workspace_screenshot`. Use `workspace_screenshot_name` to set the
+        uploaded file name for labeling/extension purposes; Tank still owns
+        the collision-safe final path.
+
         Auth-injection parameters drive an *authenticated* browse — the
         slot-playwright pod holds no credentials of its own, so the
         caller is the only source of identity. Four knobs are available:
@@ -965,6 +975,11 @@ def register_tools(
         and it bubbles up through the subprocess stderr.
         """
         session_id = require_tank_session_id()
+        if save_screenshot_to_workspace and tank_client is None:
+            raise RuntimeError(
+                "save_screenshot_to_workspace requires a TankClient; "
+                "mcp-glimmung must be configured with Tank's internal API"
+            )
         ws_endpoint, project = _resolve_slot_playwright_ws_and_project(client, session_id)
         auth_diagnostic: dict[str, Any] | None = None
         if tank_auth:
@@ -1005,6 +1020,18 @@ def register_tools(
                 screenshot_bytes = fh.read()
             if not screenshot_bytes:
                 raise RuntimeError("screenshot tempfile is empty")
+            workspace_screenshot: dict[str, Any] | None = None
+            if save_screenshot_to_workspace:
+                upload_name = (workspace_screenshot_name or "inspection-screenshot.png").strip()
+                if not upload_name:
+                    upload_name = "inspection-screenshot.png"
+                assert tank_client is not None
+                workspace_screenshot = tank_client.upload_session_file(
+                    session_id,
+                    name=upload_name,
+                    content_type="image/png",
+                    data=screenshot_bytes,
+                )
             request_id = fresh_inspection_request_id()
             response = client.post_multipart(
                 "/v1/inspections",
@@ -1045,6 +1072,8 @@ def register_tools(
         )
         if auth_diagnostic is not None:
             summary["auth"] = auth_diagnostic
+        if workspace_screenshot is not None:
+            summary["workspace_screenshot"] = workspace_screenshot
         return summary
 
     @mcp.tool()
