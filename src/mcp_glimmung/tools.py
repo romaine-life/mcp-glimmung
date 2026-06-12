@@ -1091,7 +1091,21 @@ def register_tools(
         dispatch time. A required input may carry a `default` so a no-input
         dispatch succeeds; a non-required input must declare a non-empty
         `default`. See `glimmung/docs/workflow-shape.md` → "Dispatch
-        inputs"."""
+        inputs".
+
+        Control values are operator-owned: recycle policies and budget are
+        the operator's dials, and re-registering is NOT a license to
+        normalize them — never change them without an explicit operator
+        instruction. Verification phases must declare `recycle_policy`
+        explicitly (max_attempts=1 runs the gate with recycling off);
+        registration rejects silence. Operator control pins are enforced
+        server-side: a pinned target's incoming value is discarded for the
+        pinned value, reported in the response as `pins_enforced` plus
+        `control_changes` entries with `action: "pin_enforced"` — check
+        them after registering. A pin whose target phase is missing from
+        your payload rejects the registration; ask the operator to unpin
+        rather than working around it. Every register lands in the
+        attributed control ledger (`list_workflow_control_events`)."""
         payload: dict[str, Any] = {
             "project": project,
             "name": name,
@@ -1236,6 +1250,11 @@ def register_tools(
         (phases, recycle policy) are not patchable here; re-run
         register_workflow for those.
 
+        A patch naming an operator-pinned control target (e.g. a pinned
+        budget) is rejected with the pinner and reason; do not retry —
+        the pin is an operator decision, and only an operator unpin
+        (`unpin_workflow_control`) releases it.
+
         `name` is the workflow's canonical handle (e.g. "agent-run"); pair
         it with `project` (the partition key)."""
         payload: dict[str, Any] = {}
@@ -1265,6 +1284,71 @@ def register_tools(
         `name` is the workflow's canonical handle (e.g. "issue-agent");
         pair it with `project` (the partition key)."""
         return client.delete(f"/v1/workflows/{project}/{name}")
+
+    @mcp.tool()
+    def pin_workflow_control(
+        project: str,
+        name: str,
+        target: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Pin a workflow control value so re-registrations cannot move it.
+
+        Freezes the CURRENT value at `target` — one of `budget`,
+        `pr.recycle_policy`, or `phases.<phase>.recycle_policy`. From then
+        on, any `register_workflow` payload carrying a different value for
+        the pinned target has it discarded in favor of the pinned value
+        (reported as `pins_enforced` / `pin_enforced` control changes), and
+        `patch_workflow` calls naming the target are rejected outright.
+
+        Pins freeze what is — to pin a DIFFERENT value, change it first
+        (patch/register), then pin. Only pin on explicit operator
+        instruction; the pin act is attributed to you in the control
+        ledger. `reason` is recorded and shown whenever the pin blocks or
+        overrides a write, so make it say why (e.g. "systemic verify fails
+        must not recycle — operator decision 2026-06-11")."""
+        payload: dict[str, Any] = {}
+        if reason is not None and reason.strip():
+            payload["reason"] = reason.strip()
+        return client.put(
+            f"/v1/workflows/{project}/{name}/control-pins/{target}",
+            json=payload,
+        )
+
+    @mcp.tool()
+    def unpin_workflow_control(
+        project: str,
+        name: str,
+        target: str,
+    ) -> dict[str, Any]:
+        """Release a pinned workflow control value.
+
+        The inverse of `pin_workflow_control`. Unpinning is an explicit,
+        attributed act recorded in the control ledger — only do it on
+        explicit operator instruction. After unpin, the target is an
+        ordinary control again: patchable and replaceable by
+        registration."""
+        return client.delete(f"/v1/workflows/{project}/{name}/control-pins/{target}")
+
+    @mcp.tool()
+    def list_workflow_control_events(
+        project: str,
+        name: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Read a workflow's attributed control ledger (newest first).
+
+        One event per control-plane write — register, patch, pin, unpin,
+        delete — with the actor, the resulting schema_ref, and a detail
+        document carrying the control diff (budget / pr.recycle_policy /
+        per-phase recycle policies) or the pin target+reason. Use this to
+        answer "who changed max_attempts and when" without spelunking
+        content-addressed schema history (a revert reuses an existing
+        schema row; only the ledger records the pointer move)."""
+        return client.get(
+            f"/v1/workflows/{project}/{name}/control-events",
+            params={"limit": limit},
+        )
 
     @mcp.tool()
     def patch_issue(
