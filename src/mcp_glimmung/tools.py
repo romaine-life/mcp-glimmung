@@ -116,7 +116,7 @@ def _lease_label(lease: dict[str, Any]) -> str:
     if number is not None:
         return f"#{number}"
     metadata = lease.get("metadata") if isinstance(lease.get("metadata"), dict) else {}
-    slot_name = metadata.get("native_slot_name")
+    slot_name = metadata.get("runner_slot_name")
     if isinstance(slot_name, str) and slot_name:
         return slot_name
     issue_number = metadata.get("issue_number") or metadata.get("issueNumber")
@@ -263,9 +263,9 @@ def _lease_slot_name(lease: dict[str, Any]) -> str | None:
     metadata = _lease_metadata(lease)
     value = (
         lease.get("slot_name")
-        or lease.get("native_slot_name")
+        or lease.get("runner_slot_name")
         or metadata.get("slot_name")
-        or metadata.get("native_slot_name")
+        or metadata.get("runner_slot_name")
     )
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -276,9 +276,9 @@ def _lease_slot_index(lease: dict[str, Any]) -> int | None:
     metadata = _lease_metadata(lease)
     for value in (
         lease.get("slot_index"),
-        lease.get("native_slot_index"),
+        lease.get("runner_slot_index"),
         metadata.get("slot_index"),
-        metadata.get("native_slot_index"),
+        metadata.get("runner_slot_index"),
     ):
         parsed = _as_positive_int(value)
         if parsed is not None:
@@ -372,7 +372,7 @@ def _resolve_slot_playwright_ws_and_project(
         #   1. lease["metadata"]["tank_session_id"] — older flat shape
         #   2. lease["metadata"]["requester"]["metadata"]["tank_session_id"]
         #   3. lease["requester"]["metadata"]["tank_session_id"]
-        # (2) and (3) are what the native-k8s test-slot allocator writes
+        # (2) and (3) are what the runner-k8s test-slot allocator writes
         # today — (1) was never populated by checkout_test_slot, so the
         # lookup found nothing and every inspect_browser_url call landed
         # on the "no active test-slot lease" error path. Try all three
@@ -474,7 +474,7 @@ def register_tools(
         - a run, or any phase/job/step under it, returns the ``RunReport`` (the
           canonical review object) wrapped with a ``focus`` block naming the
           addressed phase/job/step and ``links`` to the typed reads — the run
-          report, native events narrowed to that job/step, and native status;
+          report, runner events narrowed to that job/step, and runner status;
         - an issue link returns the issue detail.
 
         The server owns the URL-to-resource resolution, including canonical
@@ -485,7 +485,7 @@ def register_tools(
         return client.get(_dashboard_path(url), params={"format": "json"})
 
     @mcp.tool()
-    def get_native_run_events(
+    def get_runner_events(
         project: str,
         issue_number: int,
         run_number: str,
@@ -493,11 +493,11 @@ def register_tools(
         job_id: str | None = None,
         limit: int | None = 200,
     ) -> dict[str, Any]:
-        """Read hot native k8s_job step/log events for a Glimmung run.
+        """Read hot runner k8s_job step/log events for a Glimmung run.
 
         Use with graph attempt metadata (`phase_kind == "k8s_job"`) to inspect
         the ordered runner event stream. `attempt_index` narrows to one
-        PhaseAttempt, `job_id` narrows to one native job, and `limit` caps the
+        PhaseAttempt, `job_id` narrows to one runner job, and `limit` caps the
         returned hot rows. Older archived attempts expose `archive_url` in the
         response when hot rows have been pruned or archived.
         """
@@ -508,7 +508,7 @@ def register_tools(
         }
         run_number = _run_display(run_number)
         return client.get(
-            f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/native/events",
+            f"/v1/projects/{project}/issues/{issue_number}/runs/{run_number}/run/events",
             params={k: v for k, v in params.items() if v is not None},
         )
 
@@ -545,13 +545,13 @@ def register_tools(
 
     @mcp.tool()
     def list_leases(project: str | None = None) -> dict[str, Any]:
-        """Check checkout availability: native test slots, free hosts, active leases, and pending leases.
+        """Check checkout availability: runner test slots, free hosts, active leases, and pending leases.
 
         Returns three lists:
-        - `available_test_slots`: native test slots currently eligible for checkout.
-        - `prepared_test_slots`: native test slots with lifecycle state `available`.
+        - `available_test_slots`: runner test slots currently eligible for checkout.
+        - `prepared_test_slots`: runner test slots with lifecycle state `available`.
         - `available_hosts`: non-drained registered worker hosts with no current lease.
-        - `active_leases`: leases currently holding a host or native slot.
+        - `active_leases`: leases currently holding a host or runner slot.
         - `pending_leases`: leases queued but not yet assigned capacity.
         - `test_slot_admissions`: per-project durable checkout capacity counters.
 
@@ -1124,7 +1124,7 @@ def register_tools(
 
         `dispatch_inputs` declares the per-dispatch input contract. Each
         entry is `{name, description?, required?, default?}`. Every
-        `${{ inputs.X }}` reference inside any native job's `checkout.ref`,
+        `${{ inputs.X }}` reference inside any runner job's `checkout.ref`,
         `extra_checkouts[].ref`, or phase `workflow_ref` must name a
         declared input — the server rejects undeclared template refs at
         register time and rejects missing-required / undeclared values at
@@ -1589,11 +1589,11 @@ def register_tools(
         currently held by a different Run (caller must abort the
         conflicting run first).
 
-        For native `k8s_job` phases, set `entrypoint_job_id` and
+        For runner `k8s_job` phases, set `entrypoint_job_id` and
         `entrypoint_step_slug` to restart at a specific app-owned step
         boundary. Earlier jobs/steps are pre-marked skipped on the new
         run, and the boundary plus `artifact_refs` / `context` are exposed
-        to the native pod via GLIMMUNG_* env vars. `input_overrides`
+        to the runner pod via GLIMMUNG_* env vars. `input_overrides`
         replaces substituted phase input values for the resumed attempt.
 
         `trigger_source` is recorded on the new Run for observability;
@@ -1677,7 +1677,7 @@ def register_tools(
         `project="glimmung", issue_number=141`. `workflow` is optional and
         only needed if the project has more than one workflow registered.
         `inputs` is an optional string map passed to workflow templates such as
-        native checkout refs.
+        runner checkout refs.
 
         Returns the dispatch result: created run number, claimed lease label,
         host, and the GHA workflow_dispatch outcome."""
@@ -1754,7 +1754,7 @@ def register_tools(
         """Reserve a Glimmung native app test slot.
 
         Use this when you need an ad-hoc app slot. Glimmung chooses an
-        available slot, records a native lease, and starts lease-scoped runtime
+        available slot, records a runner lease, and starts lease-scoped runtime
         activation. Callers cannot select a slot or request clean-slate
         cleanup through checkout; queue-size changes and returns own
         destructive cleanup.

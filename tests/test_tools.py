@@ -178,8 +178,8 @@ def _state_with_active_slot(
                 "state": "claimed",
                 "metadata": {
                     "test_slot_checkout": True,
-                    "native_slot_name": slot_name,
-                    "native_slot_index": str(slot_index),
+                    "runner_slot_name": slot_name,
+                    "runner_slot_index": str(slot_index),
                 },
             }
         ]
@@ -498,7 +498,7 @@ def test_dispatch_run_hides_backing_lease_id() -> None:
             "state": "dispatched",
             "run_number": 1,
             "lease_id": "01BACKINGID",
-            "host": "native-k8s",
+            "host": "runner-k8s",
         }
 
     client.post = fake_post  # type: ignore[method-assign]
@@ -528,7 +528,7 @@ def test_dispatch_run_forwards_inputs() -> None:
             "state": "dispatched",
             "run_number": 1,
             "lease_id": "01BACKINGID",
-            "host": "native-k8s",
+            "host": "runner-k8s",
         }
 
     client.post = fake_post  # type: ignore[method-assign]
@@ -944,7 +944,7 @@ def test_browser_inspector_tool_uploads_to_glimmung(monkeypatch) -> None:
                 "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
-                    "native_slot_name": "tank-operator-slot-1",
+                    "runner_slot_name": "tank-operator-slot-1",
                     "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
                 },
             }
@@ -1001,7 +1001,7 @@ def test_browser_inspector_tool_can_save_screenshot_to_workspace(monkeypatch) ->
                 "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
-                    "native_slot_name": "tank-operator-slot-1",
+                    "runner_slot_name": "tank-operator-slot-1",
                     "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
                 },
             }
@@ -1048,7 +1048,7 @@ def test_browser_inspector_tool_requires_tank_client_for_workspace_save(
                 "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
-                    "native_slot_name": "tank-operator-slot-1",
+                    "runner_slot_name": "tank-operator-slot-1",
                     "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
                 },
             }
@@ -1078,7 +1078,7 @@ def test_browser_inspector_tool_forwards_auth_injection(monkeypatch) -> None:
                 "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
-                    "native_slot_name": "tank-operator-slot-1",
+                    "runner_slot_name": "tank-operator-slot-1",
                     "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
                 },
             }
@@ -1129,7 +1129,7 @@ def test_browser_inspector_tool_tank_auth_seeds_caller_token(monkeypatch) -> Non
                 "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
-                    "native_slot_name": "tank-operator-slot-1",
+                    "runner_slot_name": "tank-operator-slot-1",
                     "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
                 },
             }
@@ -1209,7 +1209,7 @@ def test_browser_inspector_tool_tank_auth_rejects_conflicting_storage(
                 "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
-                    "native_slot_name": "tank-operator-slot-1",
+                    "runner_slot_name": "tank-operator-slot-1",
                     "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
                 },
             }
@@ -1248,7 +1248,7 @@ def test_browser_inspector_tool_tank_auth_requires_successful_preflight(
                 "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
-                    "native_slot_name": "tank-operator-slot-1",
+                    "runner_slot_name": "tank-operator-slot-1",
                     "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
                 },
             }
@@ -1281,7 +1281,7 @@ def test_browser_inspector_tool_unlinks_tempfile_on_upload_failure(monkeypatch) 
                 "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
-                    "native_slot_name": "tank-operator-slot-1",
+                    "runner_slot_name": "tank-operator-slot-1",
                     "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
                 },
             }
@@ -1793,10 +1793,10 @@ def test_return_test_slot_clears_tank_session_when_requested() -> None:
     assert result["json"]["caller_session_id"] == "abc123"
 
 
-def test_get_native_run_events_calls_hot_log_surface() -> None:
+def test_get_runner_events_calls_hot_log_surface() -> None:
     tools, client = _registered_tools()
 
-    result = tools["get_native_run_events"](
+    result = tools["get_runner_events"](
         project="ambience",
         issue_number=44,
         run_number="1.1",
@@ -1805,17 +1805,17 @@ def test_get_native_run_events_calls_hot_log_surface() -> None:
         limit=25,
     )
 
-    assert result["path"] == "/v1/projects/ambience/issues/44/runs/1.1/native/events"
+    assert result["path"] == "/v1/projects/ambience/issues/44/runs/1.1/run/events"
     assert client.calls[-1] == (
         "GET",
-        "/v1/projects/ambience/issues/44/runs/1.1/native/events",
+        "/v1/projects/ambience/issues/44/runs/1.1/run/events",
         {"attempt_index": 2, "job_id": "agent", "limit": 25},
         None,
     )
 
 
 def test_inspect_browser_url_resolves_lease_with_requester_metadata_shape(monkeypatch) -> None:
-    """Real Glimmung lease shape for native-k8s test slots has
+    """Real Glimmung lease shape for runner-k8s test slots has
     tank_session_id at requester.metadata.tank_session_id rather than
     top-level metadata. Previously this resolved to "no active test-slot
     lease" and broke every inspect_browser_url call from a session that
@@ -1829,7 +1829,7 @@ def test_inspect_browser_url_resolves_lease_with_requester_metadata_shape(monkey
                 "lease_number": 115,
                 "project": "tank-operator",
                 "metadata": {
-                    "native_slot_name": "tank-operator-slot-4",
+                    "runner_slot_name": "tank-operator-slot-4",
                     "requester": {
                         "consumer": "tank-operator",
                         "kind": "tank_session",
@@ -1879,7 +1879,7 @@ def test_inspect_browser_url_errors_when_lease_has_no_ws_endpoint() -> None:
         "active_leases": [
             {
                 "id": "lease-1",
-                "metadata": {"tank_session_id": "abc123", "native_slot_name": "tank-operator-slot-1"},
+                "metadata": {"tank_session_id": "abc123", "runner_slot_name": "tank-operator-slot-1"},
             }
         ]
     }
@@ -1902,7 +1902,7 @@ def test_inspect_browser_url_forwards_endpoint_from_active_lease(
                 "project": "tank-operator",
                 "metadata": {
                     "tank_session_id": "abc123",
-                    "native_slot_name": "tank-operator-slot-1",
+                    "runner_slot_name": "tank-operator-slot-1",
                     "playwright_ws_endpoint": "ws://slot-playwright.tank-operator-slot-1.svc.cluster.local:3000",
                 },
             }
