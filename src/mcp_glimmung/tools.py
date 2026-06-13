@@ -1086,6 +1086,7 @@ def register_tools(
         trigger_label: str | None = None,
         default_requirements: dict[str, Any] | None = None,
         dispatch_inputs: list[dict[str, Any]] | None = None,
+        vars: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create or replace a Glimmung workflow registration, including phases, PR policy, budget, and triggers.
 
@@ -1110,6 +1111,16 @@ def register_tools(
         default disabled primitive. `budget` is `{"total": float}`
         (default 25.0). Pair with `patch_workflow` for live rollout-knob
         flips that don't need a full re-register.
+
+        `vars` is the registration-owned variable map referenced by phase-
+        and job-level `when` conditions (`${{ vars.<key> }}`). Vars are
+        workflow identity, not per-dispatch knobs — they name durable facts
+        about the shape (e.g. `{"feature_type": "effect"}`) and are part of
+        the content-hashed schema. `when` conditions ride inside the phase/
+        job dicts in `phases`; the closed grammar and skip semantics
+        (server-evaluated, zero compute on skipped legs, skipped outputs
+        resolve empty downstream) are documented in
+        `glimmung/docs/workflow-shape.md` → "Conditional Phases And Jobs".
 
         `dispatch_inputs` declares the per-dispatch input contract. Each
         entry is `{name, description?, required?, default?}`. Every
@@ -1150,6 +1161,8 @@ def register_tools(
             payload["default_requirements"] = default_requirements
         if dispatch_inputs is not None:
             payload["dispatch_inputs"] = dispatch_inputs
+        if vars is not None:
+            payload["vars"] = vars
         return client.post("/v1/workflows", json=payload)
 
     @mcp.tool()
