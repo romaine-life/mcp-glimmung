@@ -760,9 +760,12 @@ def register_tools(
 
         Args:
             project: Glimmung project name (e.g., "tank-operator").
-            artifact_kind: Which contract sub-block applies. v1 supports
-                "agent_runner" and "codex_runner"; static and backend continue
-                to use the glimmung-agent CLI path until their consumers opt in.
+            artifact_kind: Which contract sub-block applies. Supported by this
+                endpoint: "static", "agent_runner", "codex_runner",
+                "antigravity_runner". "static" builds the contract's static
+                bundle (e.g. a frontend) and streams it into the slot — the
+                CI-gated replacement for manual kubectl cp. "backend" is not
+                wired into this endpoint; use the glimmung-agent CLI for it.
             git_ref: Branch or tag to clone. Pushed beforehand.
             validation_target: What the hot-swap result is meant to prove.
                 Use "existing_session" for already-running target pods,
