@@ -751,21 +751,29 @@ def register_tools(
         dispatched Kubernetes Job completes (clones the repo at git_ref, runs
         any project-owned fidelity classifier, runs the contract's build_command
         in the contract's builder_image, kubectl-streams the artifact into the
-        target session pod, sends the configured restart signal). Then returns a
-        structured result.
+        target pods, then restarts and health-gates as the artifact_kind
+        requires). Then returns a structured result.
 
         The previous workflow (per the /test agent skill) was a manual dance
-        of `kubectl cp` + `kubectl exec` + `kill -HUP 1`. This tool replaces
-        all of that — the dev's only action is the call.
+        of `kubectl cp` + `kubectl exec` + `kill -HUP 1`. This tool — dispatching
+        a glimmung-owned Job that carries its own privilege — replaces all of
+        that, including for backend; the dev's only action is the call. Session
+        pods run read-only, so this gated path is the only way to mutate a slot.
 
         Args:
             project: Glimmung project name (e.g., "tank-operator").
             artifact_kind: Which contract sub-block applies. Supported by this
-                endpoint: "static", "agent_runner", "codex_runner",
+                endpoint: "static", "backend", "agent_runner", "codex_runner",
                 "antigravity_runner". "static" builds the contract's static
-                bundle (e.g. a frontend) and streams it into the slot — the
-                CI-gated replacement for manual kubectl cp. "backend" is not
-                wired into this endpoint; use the glimmung-agent CLI for it.
+                bundle (e.g. a frontend) and streams it into the slot's app
+                pods. "backend" builds the project binary, streams it onto the
+                supervisor's hot-artifact file in the slot's app pods, SIGHUPs
+                PID 1, then polls the contract's health_path inside each pod to
+                confirm the re-exec serves (a binary that never goes healthy
+                fails the swap). The runner kinds stream a built directory into
+                the session pods and SIGHUP their supervisor. All kinds are the
+                CI-gated replacement for manual kubectl cp — there is no
+                client-side CLI path (session pods run read-only).
             git_ref: Branch or tag to clone. Pushed beforehand.
             validation_target: What the hot-swap result is meant to prove.
                 Use "existing_session" for already-running target pods,
