@@ -806,6 +806,32 @@ def test_apply_test_slot_hot_swap_posts_minimal() -> None:
     }
 
 
+def test_apply_test_slot_hot_swap_posts_backend_kind() -> None:
+    # backend is a first-class artifact_kind on the apply endpoint (it streams
+    # the orchestrator binary onto the app pod's supervisor + health-gates the
+    # SIGHUP re-exec). The MCP tool passes it through like any other kind; the
+    # legacy glimmung-agent CLI path it used to point at is gone.
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = _state_with_active_slot()
+
+    result = tools["apply_test_slot_hot_swap"](
+        project="tank-operator",
+        artifact_kind="backend",
+        git_ref="feat/x",
+        validation_target="existing_session",
+        slot_name="tank-operator-slot-1",
+    )
+
+    assert result["path"] == "/v1/test-slots/apply-hot-swap"
+    assert result["json"] == {
+        "project": "tank-operator",
+        "artifact_kind": "backend",
+        "git_ref": "feat/x",
+        "validation_target": "existing_session",
+        "slot_name": "tank-operator-slot-1",
+    }
+
+
 def test_apply_test_slot_hot_swap_passes_timeout_and_slot_index() -> None:
     tools, client = _registered_tools()
     client.responses[("GET", "/v1/state")] = _state_with_active_slot(slot_index=2)
