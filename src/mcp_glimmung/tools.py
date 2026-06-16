@@ -7,6 +7,7 @@ unexposed — those are runner / orchestrator concerns, not session concerns.
 import json
 import logging
 import os
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -284,6 +285,104 @@ def _lease_slot_index(lease: dict[str, Any]) -> int | None:
         if parsed is not None:
             return parsed
     return None
+
+
+# apply_test_slot_hot_swap is dispatch + poll: the POST submits the build-and-
+# swap Job and returns quickly with a "running" handle; we then poll the durable
+# status until terminal or the caller's timeout elapses. No single HTTP request
+# is held open for the whole build, so a fixed-30s client timeout no longer
+# masks an 87s build as "timed out".
+_HOT_SWAP_TERMINAL_STATUSES = {"persisted", "build_failed", "swap_failed", "timeout"}
+_HOT_SWAP_POLL_INTERVAL_SECONDS = 3.0
+_HOT_SWAP_DISPATCH_TIMEOUT_SECONDS = 60.0
+_HOT_SWAP_POLL_REQUEST_TIMEOUT_SECONDS = 20.0
+# Margin added to the caller's build deadline to cover finalize latency (the
+# gated finalizer records the terminal entry shortly after the Job terminates)
+# plus cold-start jitter, so we don't give up one tick before the result lands.
+_HOT_SWAP_POLL_MARGIN_SECONDS = 30.0
+_HOT_SWAP_DEFAULT_TIMEOUT_SECONDS = 120
+
+
+def _hot_swap_result(
+    lease: str,
+    job_name: str,
+    status: str,
+    history_entry: dict[str, Any] | None,
+    dispatch: dict[str, Any],
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Shape the dispatch + poll outcome into one structured result.
+
+    Carries the durable terminal status, the history entry (with build/swap log
+    tails in its diagnostics), and the raw dispatch response for debugging. The
+    ``apply`` block mirrors the pre-async return shape so existing readers of
+    ``result["apply"]["outcome"]`` keep working.
+    """
+    entry = history_entry or {}
+    diagnostics = entry.get("diagnostics") or {}
+    result: dict[str, Any] = {
+        "lease": lease,
+        "job_name": job_name,
+        "status": status,
+        "history_entry": entry,
+        "apply": {
+            "outcome": status,
+            "job_name": job_name,
+            "build_logs_tail": diagnostics.get("build_logs_tail", ""),
+            "swap_logs_tail": diagnostics.get("swap_logs_tail", ""),
+            "validation_target": diagnostics.get("validation_target", ""),
+            "timings": entry.get("timings") or {},
+        },
+        "dispatch": dispatch,
+    }
+    if note:
+        result["note"] = note
+    return result
+
+
+def _poll_hot_swap_to_terminal(
+    client: GlimmungClient,
+    project: str,
+    job_name: str,
+    lease: str,
+    dispatch: dict[str, Any],
+    initial_entry: dict[str, Any] | None,
+    timeout_seconds: int | None,
+) -> dict[str, Any]:
+    """Poll the durable status endpoint until terminal or the budget elapses."""
+    budget = float(
+        timeout_seconds if timeout_seconds and timeout_seconds > 0 else _HOT_SWAP_DEFAULT_TIMEOUT_SECONDS
+    ) + _HOT_SWAP_POLL_MARGIN_SECONDS
+    deadline = time.monotonic() + budget
+    last_entry = initial_entry
+    status = "running"
+    path = f"/v1/test-slots/apply-hot-swap/{project}/{job_name}"
+    while time.monotonic() < deadline:
+        time.sleep(_HOT_SWAP_POLL_INTERVAL_SECONDS)
+        try:
+            poll = client.get(path, timeout=_HOT_SWAP_POLL_REQUEST_TIMEOUT_SECONDS)
+        except httpx.HTTPError:
+            # Transient (status not yet written, network blip) — keep polling
+            # within the budget rather than failing the whole call.
+            continue
+        status = poll.get("status") or status
+        last_entry = poll.get("history_entry") or last_entry
+        lease = poll.get("lease") or lease
+        if status in _HOT_SWAP_TERMINAL_STATUSES:
+            return _hot_swap_result(lease, job_name, status, last_entry, dispatch)
+    return _hot_swap_result(
+        lease,
+        job_name,
+        status or "running",
+        last_entry,
+        dispatch,
+        note=(
+            f"hot-swap still running after ~{int(budget)}s; the gated finalizer "
+            f"records the terminal outcome durably — re-query "
+            f"GET /v1/test-slots/apply-hot-swap/{project}/{job_name} or the lease "
+            f"hot-swap history for the final result"
+        ),
+    )
 
 
 def _hot_swap_selector_problem(
@@ -744,19 +843,28 @@ def register_tools(
         slot_index: int | None = None,
         slot_name: str | None = None,
         timeout_seconds: int | None = None,
+        base_ref: str | None = None,
     ) -> dict[str, Any]:
         """Build new code at a git ref and place it onto a running test slot.
 
-        End-to-end developer dev loop, sync UX: this one call blocks until the
-        dispatched Kubernetes Job completes (clones the repo at git_ref, runs
-        any project-owned fidelity classifier, runs the contract's build_command
-        in the contract's builder_image, kubectl-streams the artifact into the
-        target pods, then restarts and health-gates as the artifact_kind
-        requires). Then returns a structured result.
+        End-to-end developer dev loop. Synchronous UX, asynchronous mechanism:
+        the call dispatches a glimmung-owned Kubernetes Job (clone the repo at
+        git_ref, run any project-owned fidelity classifier, run the contract's
+        build_command in the contract's builder_image, kubectl-stream the
+        artifact into the target pods, then restart and health-gate as the
+        artifact_kind requires) and then polls glimmung's durable status until
+        the swap reaches a terminal outcome — returning a structured result.
 
-        The previous workflow (per the /test agent skill) was a manual dance
-        of `kubectl cp` + `kubectl exec` + `kill -HUP 1`. This tool — dispatching
-        a glimmung-owned Job that carries its own privilege — replaces all of
+        It polls rather than holding one long HTTP request open: the build can
+        take ~90s, and a long-held request previously hit a fixed ~30s client
+        timeout and surfaced "timed out" while the Job ran on to completion. The
+        build-and-swap deadline now lives on the Job (timeout_seconds, clamped
+        server-side to [1, 600]); this wrapper polls up to that budget and, if it
+        is still running when the budget elapses, returns the running handle —
+        the gated finalizer still records the terminal outcome durably.
+
+        The previous manual workflow (per the /test agent skill) was a dance of
+        `kubectl cp` + `kubectl exec` + `kill -HUP 1`. This tool replaces all of
         that, including for backend; the dev's only action is the call. Session
         pods run read-only, so this gated path is the only way to mutate a slot.
 
@@ -783,19 +891,29 @@ def register_tools(
                 incompatible targets.
             slot_index or slot_name: Identifies the active test-slot lease.
                 Exactly one of the two should be set.
-            timeout_seconds: Server-side bound. Clamped to [1, 600]. Default
-                120 (covers 30-90s typical build-and-swap + buffer for cold
-                image pulls).
+            timeout_seconds: Build-and-swap deadline, enforced on the Kubernetes
+                Job and used as this wrapper's poll budget. Clamped to [1, 600].
+                Default 120 (covers 30-90s typical build-and-swap + buffer for
+                cold image pulls).
+            base_ref: Optional diff base for the project's fidelity classifier.
+                When omitted, glimmung uses the repository's default branch. The
+                classifier's changed-file set is computed as base_ref...git_ref;
+                glimmung resolves it server-side because the build Job's shallow
+                checkout cannot.
 
-        Returns the structured result from POST /v1/test-slots/apply-hot-swap:
-            {"lease": "...", "apply": {"outcome": "persisted" | "build_failed"
-              | "swap_failed" | "timeout", "job_name": ..., "target_pods":
-              [...], "build_logs_tail": ..., "swap_logs_tail": ..., "timings":
-              {...}}, "history_entry": {...}}
+        Returns a structured result:
+            {"lease": "...", "job_name": "apply-hot-swap-...",
+             "status": "persisted" | "build_failed" | "swap_failed" | "timeout"
+               | "running",
+             "history_entry": {"status": ..., "summary": ..., "diagnostics":
+               {"build_logs_tail": ..., "swap_logs_tail": ..., ...}, "timings":
+               {...}}, "apply": {"outcome": ..., ...}, "dispatch": {...}}
+        When the poll budget elapses before the Job finishes, status is
+        "running" and a "note" explains how to re-query.
 
-        Hot-swap history is recorded on every outcome — durable state lives
-        in the lease, not in the response. A caller that disconnects mid-
-        request can re-query via the lease's metadata to see the result.
+        Hot-swap history is recorded on every outcome — durable state lives in
+        the lease, not in the response. A caller that disconnects can re-query
+        GET /v1/test-slots/apply-hot-swap/{project}/{job} or the lease history.
 
         See docs/test-slot-hot-swap.md in romaine-life/glimmung for the workflow
         contract and the contract shape projects need to declare.
@@ -816,7 +934,38 @@ def register_tools(
             payload["slot_index"] = slot_index
         if timeout_seconds is not None:
             payload["timeout_seconds"] = timeout_seconds
-        return client.post("/v1/test-slots/apply-hot-swap", json=payload)
+        if base_ref:
+            payload["base_ref"] = base_ref
+
+        # Dispatch is fast (Job submission); the build runs async on the cluster.
+        dispatch = client.post(
+            "/v1/test-slots/apply-hot-swap",
+            json=payload,
+            timeout=_HOT_SWAP_DISPATCH_TIMEOUT_SECONDS,
+        )
+        apply_block = dispatch.get("apply") or {}
+        job_name = (apply_block.get("job_name") or "").strip()
+        status = (apply_block.get("outcome") or "").strip()
+        lease = dispatch.get("lease") or ""
+        initial_entry = dispatch.get("history_entry")
+
+        # Dispatch failed before a Job existed (nothing to finalize), or there is
+        # no handle to poll — surface what we have without polling.
+        if status and status in _HOT_SWAP_TERMINAL_STATUSES:
+            return _hot_swap_result(lease, job_name, status, initial_entry, dispatch)
+        if not job_name:
+            return _hot_swap_result(
+                lease,
+                job_name,
+                status or "running",
+                initial_entry,
+                dispatch,
+                note="dispatch returned no job handle; re-query the lease hot-swap history",
+            )
+
+        return _poll_hot_swap_to_terminal(
+            client, project, job_name, lease, dispatch, initial_entry, timeout_seconds
+        )
 
     @mcp.tool()
     def list_workflows(

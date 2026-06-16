@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import mcp_glimmung.tools as tools_mod
 from mcp_glimmung.tools import register_tools
 from mcp_glimmung.caller import CALLER_SESSION_ID
 
@@ -31,7 +32,12 @@ class StubClient:
         self.calls: list[tuple[str, str, dict[str, Any] | None, dict[str, Any] | None]] = []
         self.responses: dict[tuple[str, str], Any] = {}
 
-    def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    def get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
         self.calls.append(("GET", path, params, None))
         if ("GET", path) in self.responses:
             return self.responses[("GET", path)]
@@ -56,8 +62,11 @@ class StubClient:
         path: str,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         self.calls.append(("POST", path, params, json))
+        if ("POST", path) in self.responses:
+            return self.responses[("POST", path)]
         return {"path": path, "params": params, "json": json}
 
     def post_multipart(
@@ -784,9 +793,55 @@ def test_record_test_slot_hot_swap_returns_diagnostic_without_active_lease() -> 
     assert client.calls == [("GET", "/v1/state", None, None)]
 
 
-def test_apply_test_slot_hot_swap_posts_minimal() -> None:
+def _running_dispatch(job_name: str = "apply-hot-swap-x", lease: str = "lease-x") -> dict[str, Any]:
+    return {
+        "lease": lease,
+        "apply": {"job_name": job_name, "outcome": "running", "timings": {}},
+        "history_entry": {
+            "operation": "apply_hot_swap",
+            "status": "running",
+            "diagnostics": {"job_name": job_name},
+        },
+    }
+
+
+def _terminal_status(
+    job_name: str = "apply-hot-swap-x",
+    lease: str = "lease-x",
+    status: str = "persisted",
+) -> dict[str, Any]:
+    return {
+        "lease": lease,
+        "job_name": job_name,
+        "status": status,
+        "history_entry": {
+            "operation": "apply_hot_swap",
+            "status": status,
+            "diagnostics": {
+                "build_logs_tail": "build ok",
+                "swap_logs_tail": "swap ok",
+                "validation_target": "existing_session",
+            },
+            "timings": {"total": "42s"},
+        },
+    }
+
+
+def _post_payload(client: StubClient, path: str) -> dict[str, Any] | None:
+    for method, called_path, _params, json in client.calls:
+        if method == "POST" and called_path == path:
+            return json
+    return None
+
+
+def test_apply_test_slot_hot_swap_dispatches_and_polls_to_terminal(monkeypatch) -> None:
     tools, client = _registered_tools()
+    monkeypatch.setattr(tools_mod, "_HOT_SWAP_POLL_INTERVAL_SECONDS", 0)
     client.responses[("GET", "/v1/state")] = _state_with_active_slot()
+    client.responses[("POST", "/v1/test-slots/apply-hot-swap")] = _running_dispatch()
+    client.responses[
+        ("GET", "/v1/test-slots/apply-hot-swap/tank-operator/apply-hot-swap-x")
+    ] = _terminal_status()
 
     result = tools["apply_test_slot_hot_swap"](
         project="tank-operator",
@@ -796,23 +851,40 @@ def test_apply_test_slot_hot_swap_posts_minimal() -> None:
         slot_name="tank-operator-slot-1",
     )
 
-    assert result["path"] == "/v1/test-slots/apply-hot-swap"
-    assert result["json"] == {
+    # The dispatch POST carries exactly the minimal payload (no timeout/base_ref).
+    assert _post_payload(client, "/v1/test-slots/apply-hot-swap") == {
         "project": "tank-operator",
         "artifact_kind": "agent_runner",
         "git_ref": "feat/durable-stop-request",
         "validation_target": "existing_session",
         "slot_name": "tank-operator-slot-1",
     }
+    # The wrapper polled the durable status endpoint and returned the terminal
+    # outcome (not a fixed-timeout failure).
+    assert (
+        "GET",
+        "/v1/test-slots/apply-hot-swap/tank-operator/apply-hot-swap-x",
+        None,
+        None,
+    ) in client.calls
+    assert result["status"] == "persisted"
+    assert result["job_name"] == "apply-hot-swap-x"
+    assert result["apply"]["outcome"] == "persisted"
+    assert result["apply"]["build_logs_tail"] == "build ok"
 
 
-def test_apply_test_slot_hot_swap_posts_backend_kind() -> None:
+def test_apply_test_slot_hot_swap_posts_backend_kind(monkeypatch) -> None:
     # backend is a first-class artifact_kind on the apply endpoint (it streams
     # the orchestrator binary onto the app pod's supervisor + health-gates the
     # SIGHUP re-exec). The MCP tool passes it through like any other kind; the
     # legacy glimmung-agent CLI path it used to point at is gone.
     tools, client = _registered_tools()
+    monkeypatch.setattr(tools_mod, "_HOT_SWAP_POLL_INTERVAL_SECONDS", 0)
     client.responses[("GET", "/v1/state")] = _state_with_active_slot()
+    client.responses[("POST", "/v1/test-slots/apply-hot-swap")] = _running_dispatch()
+    client.responses[
+        ("GET", "/v1/test-slots/apply-hot-swap/tank-operator/apply-hot-swap-x")
+    ] = _terminal_status()
 
     result = tools["apply_test_slot_hot_swap"](
         project="tank-operator",
@@ -822,38 +894,97 @@ def test_apply_test_slot_hot_swap_posts_backend_kind() -> None:
         slot_name="tank-operator-slot-1",
     )
 
-    assert result["path"] == "/v1/test-slots/apply-hot-swap"
-    assert result["json"] == {
+    assert _post_payload(client, "/v1/test-slots/apply-hot-swap") == {
         "project": "tank-operator",
         "artifact_kind": "backend",
         "git_ref": "feat/x",
         "validation_target": "existing_session",
         "slot_name": "tank-operator-slot-1",
     }
+    assert result["status"] == "persisted"
 
 
-def test_apply_test_slot_hot_swap_passes_timeout_and_slot_index() -> None:
+def test_apply_test_slot_hot_swap_passes_timeout_slot_index_and_base_ref(monkeypatch) -> None:
     tools, client = _registered_tools()
+    monkeypatch.setattr(tools_mod, "_HOT_SWAP_POLL_INTERVAL_SECONDS", 0)
     client.responses[("GET", "/v1/state")] = _state_with_active_slot(slot_index=2)
+    client.responses[("POST", "/v1/test-slots/apply-hot-swap")] = _running_dispatch()
+    client.responses[
+        ("GET", "/v1/test-slots/apply-hot-swap/tank-operator/apply-hot-swap-x")
+    ] = _terminal_status()
 
-    result = tools["apply_test_slot_hot_swap"](
+    tools["apply_test_slot_hot_swap"](
         project="tank-operator",
         artifact_kind="agent_runner",
         git_ref="main",
         validation_target="full_runtime",
         slot_index=2,
         timeout_seconds=300,
+        base_ref="main",
     )
 
-    assert result["path"] == "/v1/test-slots/apply-hot-swap"
-    assert result["json"] == {
+    assert _post_payload(client, "/v1/test-slots/apply-hot-swap") == {
         "project": "tank-operator",
         "artifact_kind": "agent_runner",
         "git_ref": "main",
         "validation_target": "full_runtime",
         "slot_index": 2,
         "timeout_seconds": 300,
+        "base_ref": "main",
     }
+
+
+def test_apply_test_slot_hot_swap_dispatch_failure_skips_poll() -> None:
+    # When the Job never reaches the apiserver the dispatch is already terminal;
+    # there is nothing to poll, so the wrapper returns immediately.
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = _state_with_active_slot()
+    client.responses[("POST", "/v1/test-slots/apply-hot-swap")] = {
+        "lease": "lease-x",
+        "apply": {"job_name": "apply-hot-swap-x", "outcome": "swap_failed", "error": "apply job: boom"},
+        "history_entry": {"operation": "apply_hot_swap", "status": "swap_failed"},
+    }
+
+    result = tools["apply_test_slot_hot_swap"](
+        project="tank-operator",
+        artifact_kind="static",
+        git_ref="x",
+        validation_target="existing_session",
+        slot_name="tank-operator-slot-1",
+    )
+
+    assert result["status"] == "swap_failed"
+    # No status GET was issued (only the /v1/state precheck + the dispatch POST).
+    assert not any(
+        c[0] == "GET" and c[1].startswith("/v1/test-slots/apply-hot-swap/") for c in client.calls
+    )
+
+
+def test_apply_test_slot_hot_swap_poll_budget_elapsed_returns_running(monkeypatch) -> None:
+    tools, client = _registered_tools()
+    monkeypatch.setattr(tools_mod, "_HOT_SWAP_POLL_INTERVAL_SECONDS", 0)
+    # Fake clock: deadline-calc=0, first loop-check=0 (<budget), post-poll check
+    # jumps past the budget so the loop exits after a single running poll.
+    clock = iter([0.0, 0.0, 10_000.0, 10_000.0, 10_000.0])
+    monkeypatch.setattr(tools_mod.time, "monotonic", lambda: next(clock))
+    client.responses[("GET", "/v1/state")] = _state_with_active_slot()
+    client.responses[("POST", "/v1/test-slots/apply-hot-swap")] = _running_dispatch()
+    client.responses[
+        ("GET", "/v1/test-slots/apply-hot-swap/tank-operator/apply-hot-swap-x")
+    ] = _terminal_status(status="running")
+
+    result = tools["apply_test_slot_hot_swap"](
+        project="tank-operator",
+        artifact_kind="static",
+        git_ref="x",
+        validation_target="existing_session",
+        slot_name="tank-operator-slot-1",
+        timeout_seconds=10,
+    )
+
+    assert result["status"] == "running"
+    assert "note" in result
+    assert "re-query" in result["note"]
 
 
 def test_apply_test_slot_hot_swap_requires_one_slot_selector() -> None:

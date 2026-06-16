@@ -90,8 +90,18 @@ class GlimmungClient:
             headers[ACTOR_HEADER] = f"tank-session:{session_id}"
         return headers
 
-    def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        r = self._http.get(self._base_url + path, params=params, headers=self._headers())
+    def get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        r = self._http.get(
+            self._base_url + path,
+            params=params,
+            headers=self._headers(),
+            timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
+        )
         _raise_for_status(r)
         return r.json()
 
@@ -115,12 +125,14 @@ class GlimmungClient:
         path: str,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> Any:
         r = self._http.post(
             self._base_url + path,
             params=params,
             json=json,
             headers=self._headers(),
+            timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
         )
         _raise_for_status(r)
         return r.json()
