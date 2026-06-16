@@ -396,7 +396,7 @@ def _deploy_result(
     dispatch: dict[str, Any],
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Shape the deploy-to-image dispatch + poll outcome into one structured result."""
+    """Shape the deploy-image-to-slot dispatch + poll outcome into one structured result."""
     entry = history_entry or {}
     diagnostics = entry.get("diagnostics") or {}
     result: dict[str, Any] = {
@@ -1043,7 +1043,7 @@ def register_tools(
         )
 
     @mcp.tool()
-    def deploy_test_slot_to_image(
+    def deploy_image_to_test_slot(
         project: str,
         git_ref: str,
         slot_index: int | None = None,
@@ -1102,7 +1102,7 @@ def register_tools(
             payload["slot_index"] = slot_index
 
         dispatch = client.post(
-            "/v1/test-slots/deploy-to-image",
+            "/v1/test-slots/deploy-image",
             json=payload,
             timeout=_HOT_SWAP_DISPATCH_TIMEOUT_SECONDS,
         )
