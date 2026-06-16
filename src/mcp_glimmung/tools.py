@@ -385,6 +385,81 @@ def _poll_hot_swap_to_terminal(
     )
 
 
+_DEPLOY_TERMINAL_STATUSES = {"deployed", "deploy_failed"}
+
+
+def _deploy_result(
+    lease: str,
+    job: str,
+    status: str,
+    history_entry: dict[str, Any] | None,
+    dispatch: dict[str, Any],
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Shape the deploy-to-image dispatch + poll outcome into one structured result."""
+    entry = history_entry or {}
+    diagnostics = entry.get("diagnostics") or {}
+    result: dict[str, Any] = {
+        "lease": lease,
+        "job_name": job,
+        "status": status,
+        "history_entry": entry,
+        "deploy": {
+            "outcome": status,
+            "git_ref": diagnostics.get("git_ref", ""),
+            "sha": diagnostics.get("sha", ""),
+            "image": diagnostics.get("image", ""),
+            "error": diagnostics.get("error", ""),
+        },
+        "dispatch": dispatch,
+    }
+    if note:
+        result["note"] = note
+    return result
+
+
+def _poll_deploy_to_terminal(
+    client: GlimmungClient,
+    project: str,
+    job: str,
+    lease: str,
+    dispatch: dict[str, Any],
+    initial_entry: dict[str, Any] | None,
+    timeout_seconds: int | None,
+) -> dict[str, Any]:
+    """Poll the durable status endpoint until the deploy is terminal or the budget elapses."""
+    budget = float(
+        timeout_seconds if timeout_seconds and timeout_seconds > 0 else _HOT_SWAP_DEFAULT_TIMEOUT_SECONDS
+    ) + _HOT_SWAP_POLL_MARGIN_SECONDS
+    deadline = time.monotonic() + budget
+    last_entry = initial_entry
+    status = "running"
+    path = f"/v1/test-slots/apply-hot-swap/{project}/{job}"
+    while time.monotonic() < deadline:
+        time.sleep(_HOT_SWAP_POLL_INTERVAL_SECONDS)
+        try:
+            poll = client.get(path, timeout=_HOT_SWAP_POLL_REQUEST_TIMEOUT_SECONDS)
+        except httpx.HTTPError:
+            continue
+        status = poll.get("status") or status
+        last_entry = poll.get("history_entry") or last_entry
+        lease = poll.get("lease") or lease
+        if status in _DEPLOY_TERMINAL_STATUSES:
+            return _deploy_result(lease, job, status, last_entry, dispatch)
+    return _deploy_result(
+        lease,
+        job,
+        status or "running",
+        last_entry,
+        dispatch,
+        note=(
+            f"deploy still running after ~{int(budget)}s; the outcome is recorded "
+            f"durably — re-query GET /v1/test-slots/apply-hot-swap/{project}/{job} "
+            f"or the lease history for the final result"
+        ),
+    )
+
+
 def _hot_swap_selector_problem(
     project: str,
     slot_name: str | None,
@@ -965,6 +1040,90 @@ def register_tools(
 
         return _poll_hot_swap_to_terminal(
             client, project, job_name, lease, dispatch, initial_entry, timeout_seconds
+        )
+
+    @mcp.tool()
+    def deploy_test_slot_to_image(
+        project: str,
+        git_ref: str,
+        slot_index: int | None = None,
+        slot_name: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        """Deploy the CI-built image for a verified commit onto a running test slot.
+
+        The successor to apply_test_slot_hot_swap: instead of building an artifact
+        and streaming it in, it redeploys the slot to the exact image CI already
+        built for git_ref — correct by construction (the slot runs what ships),
+        with the agent out of the cluster entirely. No artifact_kind to pick, no
+        fidelity classifier, no kubectl.
+
+        Synchronous UX, asynchronous mechanism: the call resolves git_ref to its
+        commit SHA, dispatches a glimmung-owned reconcile of the slot's chart at
+        the verified ref with the CI image pinned, then polls the durable status
+        until the deploy is terminal (deployed | deploy_failed) and the slot is
+        verified — from the apiserver — to actually be running that image, or
+        returns the running handle if the poll budget elapses (the outcome is
+        still recorded durably).
+
+        The caller supplies only a project, a slot, and a pushed git_ref. The
+        legitimacy gate (published + CI-green + mergeable + current-with-main) is
+        enforced upstream, and deploys only ever operate on a git ref, so unpushed
+        working-tree code can never reach a slot. CI must have built and pushed the
+        image for that commit (tagged by the commit SHA).
+
+        Args:
+            project: Glimmung project name (e.g., "tank-operator").
+            git_ref: Branch, tag, or SHA to deploy. Pushed beforehand.
+            slot_index or slot_name: Identifies the active test-slot lease.
+                Exactly one of the two should be set.
+            timeout_seconds: Deploy deadline used as this wrapper's poll budget.
+                Default 120.
+
+        Returns a structured result:
+            {"lease": "...", "job_name": "deploy-...",
+             "status": "deployed" | "deploy_failed" | "running",
+             "history_entry": {...},
+             "deploy": {"outcome": ..., "git_ref": ..., "sha": ..., "image": ...},
+             "dispatch": {...}}
+        When the budget elapses before the deploy finishes, status is "running"
+        and a "note" explains how to re-query.
+
+        See docs/test-slot-deploy-plan.md in romaine-life/glimmung for the design.
+        """
+        problem = _active_hot_swap_lease_problem(client, project, slot_name, slot_index)
+        if problem is not None:
+            return problem
+
+        payload: dict[str, Any] = {"project": project, "git_ref": git_ref}
+        if slot_name:
+            payload["slot_name"] = slot_name
+        if slot_index is not None:
+            payload["slot_index"] = slot_index
+
+        dispatch = client.post(
+            "/v1/test-slots/deploy-to-image",
+            json=payload,
+            timeout=_HOT_SWAP_DISPATCH_TIMEOUT_SECONDS,
+        )
+        job = (dispatch.get("job") or "").strip()
+        status = (dispatch.get("status") or "").strip()
+        lease = dispatch.get("lease") or ""
+        initial_entry = dispatch.get("history_entry")
+
+        if status and status in _DEPLOY_TERMINAL_STATUSES:
+            return _deploy_result(lease, job, status, initial_entry, dispatch)
+        if not job:
+            return _deploy_result(
+                lease,
+                job,
+                status or "running",
+                initial_entry,
+                dispatch,
+                note="dispatch returned no deploy handle; re-query the lease history",
+            )
+        return _poll_deploy_to_terminal(
+            client, project, job, lease, dispatch, initial_entry, timeout_seconds
         )
 
     @mcp.tool()
