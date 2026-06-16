@@ -1017,6 +1017,121 @@ def test_apply_test_slot_hot_swap_returns_diagnostic_without_active_lease() -> N
     assert client.calls == [("GET", "/v1/state", None, None)]
 
 
+def _deploy_running_dispatch() -> dict[str, Any]:
+    return {
+        "lease": "lease-x",
+        "job": "deploy-x",
+        "status": "running",
+        "git_ref": "feat/x",
+        "sha": "abc123def456",
+        "image": "abc123def456",
+        "history_entry": {
+            "operation": "deploy_to_image",
+            "status": "running",
+            "diagnostics": {
+                "job_name": "deploy-x",
+                "git_ref": "feat/x",
+                "sha": "abc123def456",
+                "image": "abc123def456",
+            },
+        },
+    }
+
+
+def _deploy_terminal_status(status: str = "deployed") -> dict[str, Any]:
+    return {
+        "lease": "lease-x",
+        "job_name": "deploy-x",
+        "status": status,
+        "history_entry": {
+            "operation": "deploy_to_image",
+            "status": status,
+            "diagnostics": {
+                "job_name": "deploy-x",
+                "git_ref": "feat/x",
+                "sha": "abc123def456",
+                "image": "abc123def456",
+            },
+        },
+    }
+
+
+def test_deploy_test_slot_to_image_dispatches_and_polls_to_terminal(monkeypatch) -> None:
+    tools, client = _registered_tools()
+    monkeypatch.setattr(tools_mod, "_HOT_SWAP_POLL_INTERVAL_SECONDS", 0)
+    client.responses[("GET", "/v1/state")] = _state_with_active_slot()
+    client.responses[("POST", "/v1/test-slots/deploy-to-image")] = _deploy_running_dispatch()
+    client.responses[
+        ("GET", "/v1/test-slots/apply-hot-swap/tank-operator/deploy-x")
+    ] = _deploy_terminal_status()
+
+    result = tools["deploy_test_slot_to_image"](
+        project="tank-operator",
+        git_ref="feat/x",
+        slot_name="tank-operator-slot-1",
+    )
+
+    # Minimal payload: project + git_ref + slot, no artifact_kind / classifier.
+    assert _post_payload(client, "/v1/test-slots/deploy-to-image") == {
+        "project": "tank-operator",
+        "git_ref": "feat/x",
+        "slot_name": "tank-operator-slot-1",
+    }
+    # Polled the shared status endpoint by the deploy handle and returned terminal.
+    assert (
+        "GET",
+        "/v1/test-slots/apply-hot-swap/tank-operator/deploy-x",
+        None,
+        None,
+    ) in client.calls
+    assert result["status"] == "deployed"
+    assert result["job_name"] == "deploy-x"
+    assert result["deploy"]["outcome"] == "deployed"
+    assert result["deploy"]["sha"] == "abc123def456"
+    assert result["deploy"]["image"] == "abc123def456"
+
+
+def test_deploy_test_slot_to_image_passes_slot_index(monkeypatch) -> None:
+    tools, client = _registered_tools()
+    monkeypatch.setattr(tools_mod, "_HOT_SWAP_POLL_INTERVAL_SECONDS", 0)
+    client.responses[("GET", "/v1/state")] = _state_with_active_slot(slot_index=2)
+    client.responses[("POST", "/v1/test-slots/deploy-to-image")] = _deploy_running_dispatch()
+    client.responses[
+        ("GET", "/v1/test-slots/apply-hot-swap/tank-operator/deploy-x")
+    ] = _deploy_terminal_status()
+
+    tools["deploy_test_slot_to_image"](
+        project="tank-operator",
+        git_ref="main",
+        slot_index=2,
+        timeout_seconds=300,
+    )
+
+    # timeout_seconds is the poll budget, not a request field — payload stays minimal.
+    assert _post_payload(client, "/v1/test-slots/deploy-to-image") == {
+        "project": "tank-operator",
+        "git_ref": "main",
+        "slot_index": 2,
+    }
+
+
+def test_deploy_test_slot_to_image_requires_one_slot_selector() -> None:
+    tools, client = _registered_tools()
+    result = tools["deploy_test_slot_to_image"](project="tank-operator", git_ref="main")
+    assert result["state"] == "slot_selector_invalid"
+    assert client.calls == []
+
+
+def test_deploy_test_slot_to_image_returns_diagnostic_without_active_lease() -> None:
+    tools, client = _registered_tools()
+    client.responses[("GET", "/v1/state")] = {"active_leases": []}
+    result = tools["deploy_test_slot_to_image"](
+        project="tank-operator", git_ref="main", slot_index=1
+    )
+    assert result["state"] == "no_active_test_slot_lease"
+    assert client.calls == [("GET", "/v1/state", None, None)]
+
+
 def test_playbook_tools_call_http_surface() -> None:
     tools, client = _registered_tools()
 
