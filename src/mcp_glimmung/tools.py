@@ -287,104 +287,11 @@ def _lease_slot_index(lease: dict[str, Any]) -> int | None:
     return None
 
 
-# apply_test_slot_hot_swap is dispatch + poll: the POST submits the build-and-
-# swap Job and returns quickly with a "running" handle; we then poll the durable
-# status until terminal or the caller's timeout elapses. No single HTTP request
-# is held open for the whole build, so a fixed-30s client timeout no longer
-# masks an 87s build as "timed out".
-_HOT_SWAP_TERMINAL_STATUSES = {"persisted", "build_failed", "swap_failed", "timeout"}
-_HOT_SWAP_POLL_INTERVAL_SECONDS = 3.0
-_HOT_SWAP_DISPATCH_TIMEOUT_SECONDS = 60.0
-_HOT_SWAP_POLL_REQUEST_TIMEOUT_SECONDS = 20.0
-# Margin added to the caller's build deadline to cover finalize latency (the
-# gated finalizer records the terminal entry shortly after the Job terminates)
-# plus cold-start jitter, so we don't give up one tick before the result lands.
-_HOT_SWAP_POLL_MARGIN_SECONDS = 30.0
-_HOT_SWAP_DEFAULT_TIMEOUT_SECONDS = 120
-
-
-def _hot_swap_result(
-    lease: str,
-    job_name: str,
-    status: str,
-    history_entry: dict[str, Any] | None,
-    dispatch: dict[str, Any],
-    note: str | None = None,
-) -> dict[str, Any]:
-    """Shape the dispatch + poll outcome into one structured result.
-
-    Carries the durable terminal status, the history entry (with build/swap log
-    tails in its diagnostics), and the raw dispatch response for debugging. The
-    ``apply`` block mirrors the pre-async return shape so existing readers of
-    ``result["apply"]["outcome"]`` keep working.
-    """
-    entry = history_entry or {}
-    diagnostics = entry.get("diagnostics") or {}
-    result: dict[str, Any] = {
-        "lease": lease,
-        "job_name": job_name,
-        "status": status,
-        "history_entry": entry,
-        "apply": {
-            "outcome": status,
-            "job_name": job_name,
-            "build_logs_tail": diagnostics.get("build_logs_tail", ""),
-            "swap_logs_tail": diagnostics.get("swap_logs_tail", ""),
-            "validation_target": diagnostics.get("validation_target", ""),
-            "timings": entry.get("timings") or {},
-        },
-        "dispatch": dispatch,
-    }
-    if note:
-        result["note"] = note
-    return result
-
-
-def _poll_hot_swap_to_terminal(
-    client: GlimmungClient,
-    project: str,
-    job_name: str,
-    lease: str,
-    dispatch: dict[str, Any],
-    initial_entry: dict[str, Any] | None,
-    timeout_seconds: int | None,
-) -> dict[str, Any]:
-    """Poll the durable status endpoint until terminal or the budget elapses."""
-    budget = float(
-        timeout_seconds if timeout_seconds and timeout_seconds > 0 else _HOT_SWAP_DEFAULT_TIMEOUT_SECONDS
-    ) + _HOT_SWAP_POLL_MARGIN_SECONDS
-    deadline = time.monotonic() + budget
-    last_entry = initial_entry
-    status = "running"
-    path = f"/v1/test-slots/apply-hot-swap/{project}/{job_name}"
-    while time.monotonic() < deadline:
-        time.sleep(_HOT_SWAP_POLL_INTERVAL_SECONDS)
-        try:
-            poll = client.get(path, timeout=_HOT_SWAP_POLL_REQUEST_TIMEOUT_SECONDS)
-        except httpx.HTTPError:
-            # Transient (status not yet written, network blip) — keep polling
-            # within the budget rather than failing the whole call.
-            continue
-        status = poll.get("status") or status
-        last_entry = poll.get("history_entry") or last_entry
-        lease = poll.get("lease") or lease
-        if status in _HOT_SWAP_TERMINAL_STATUSES:
-            return _hot_swap_result(lease, job_name, status, last_entry, dispatch)
-    return _hot_swap_result(
-        lease,
-        job_name,
-        status or "running",
-        last_entry,
-        dispatch,
-        note=(
-            f"hot-swap still running after ~{int(budget)}s; the gated finalizer "
-            f"records the terminal outcome durably — re-query "
-            f"GET /v1/test-slots/apply-hot-swap/{project}/{job_name} or the lease "
-            f"hot-swap history for the final result"
-        ),
-    )
-
-
+_SLOT_OP_POLL_INTERVAL_SECONDS = 3.0
+_SLOT_OP_DISPATCH_TIMEOUT_SECONDS = 60.0
+_SLOT_OP_POLL_REQUEST_TIMEOUT_SECONDS = 20.0
+_SLOT_OP_POLL_MARGIN_SECONDS = 30.0
+_SLOT_OP_DEFAULT_TIMEOUT_SECONDS = 120
 _DEPLOY_TERMINAL_STATUSES = {"deployed", "deploy_failed"}
 
 
@@ -429,16 +336,16 @@ def _poll_deploy_to_terminal(
 ) -> dict[str, Any]:
     """Poll the durable status endpoint until the deploy is terminal or the budget elapses."""
     budget = float(
-        timeout_seconds if timeout_seconds and timeout_seconds > 0 else _HOT_SWAP_DEFAULT_TIMEOUT_SECONDS
-    ) + _HOT_SWAP_POLL_MARGIN_SECONDS
+        timeout_seconds if timeout_seconds and timeout_seconds > 0 else _SLOT_OP_DEFAULT_TIMEOUT_SECONDS
+    ) + _SLOT_OP_POLL_MARGIN_SECONDS
     deadline = time.monotonic() + budget
     last_entry = initial_entry
     status = "running"
-    path = f"/v1/test-slots/apply-hot-swap/{project}/{job}"
+    path = f"/v1/test-slots/jobs/{project}/{job}"
     while time.monotonic() < deadline:
-        time.sleep(_HOT_SWAP_POLL_INTERVAL_SECONDS)
+        time.sleep(_SLOT_OP_POLL_INTERVAL_SECONDS)
         try:
-            poll = client.get(path, timeout=_HOT_SWAP_POLL_REQUEST_TIMEOUT_SECONDS)
+            poll = client.get(path, timeout=_SLOT_OP_POLL_REQUEST_TIMEOUT_SECONDS)
         except httpx.HTTPError:
             continue
         status = poll.get("status") or status
@@ -454,13 +361,13 @@ def _poll_deploy_to_terminal(
         dispatch,
         note=(
             f"deploy still running after ~{int(budget)}s; the outcome is recorded "
-            f"durably — re-query GET /v1/test-slots/apply-hot-swap/{project}/{job} "
+            f"durably — re-query GET /v1/test-slots/jobs/{project}/{job} "
             f"or the lease history for the final result"
         ),
     )
 
 
-def _hot_swap_selector_problem(
+def _slot_selector_problem(
     project: str,
     slot_name: str | None,
     slot_index: int | None,
@@ -478,13 +385,13 @@ def _hot_swap_selector_problem(
     return None
 
 
-def _active_hot_swap_lease_problem(
+def _active_test_slot_lease_problem(
     client: GlimmungClient,
     project: str,
     slot_name: str | None,
     slot_index: int | None,
 ) -> dict[str, Any] | None:
-    selector_problem = _hot_swap_selector_problem(project, slot_name, slot_index)
+    selector_problem = _slot_selector_problem(project, slot_name, slot_index)
     if selector_problem is not None:
         return selector_problem
 
@@ -510,7 +417,7 @@ def _active_hot_swap_lease_problem(
         "slot_index": slot_index,
         "detail": (
             "no active test-slot lease matches this project and slot; "
-            "call checkout_test_slot before applying or recording a hot swap"
+            "call checkout_test_slot before deploying an image"
         ),
     }
 
@@ -835,214 +742,6 @@ def register_tools(
         )
 
     @mcp.tool()
-    def get_test_slot_hot_swap_contract(project: str) -> dict[str, Any]:
-        """Read a project's native test-slot hot-swap contract.
-
-        Use before fast validation updates. The returned contract describes
-        static copy source/target paths and backend build/artifact/restart
-        behavior. If the project has no `metadata.test_slot_hot_swap`, the
-        response has `enabled: false` and a diagnostic detail."""
-        rows = client.get("/v1/projects", params={"name": project, "limit": 10})
-        for row in rows:
-            if row.get("name") != project and row.get("id") != project:
-                continue
-            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
-            contract = metadata.get("test_slot_hot_swap") or metadata.get("testSlotHotSwap")
-            if isinstance(contract, dict):
-                return {
-                    "project": row.get("name") or project,
-                    "enabled": bool(contract.get("enabled")),
-                    "contract": contract,
-                }
-            return {
-                "project": row.get("name") or project,
-                "enabled": False,
-                "detail": "project has no test_slot_hot_swap metadata",
-            }
-        return {
-            "project": project,
-            "enabled": False,
-            "detail": "project not found",
-        }
-
-    @mcp.tool()
-    def record_test_slot_hot_swap(
-        project: str,
-        status: str,
-        operation: str = "hot_swap",
-        lease_ref: str | None = None,
-        slot_name: str | None = None,
-        slot_index: int | None = None,
-        summary: str = "",
-        diagnostics: dict[str, Any] | None = None,
-        timings: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
-        """Append hot-swap diagnostics to an active test-slot lease.
-
-        Use after a static or backend hot swap so later operators can inspect
-        recent build/copy/restart/health details from the lease metadata. Pass
-        `lease_ref`, or identify the active checkout with `slot_name` or
-        `slot_index`.
-
-        When a slot selector is used and no active checkout exists, this
-        returns `state: no_active_test_slot_lease` instead of surfacing the
-        Glimmung API's generic 404."""
-        if not lease_ref:
-            problem = _active_hot_swap_lease_problem(client, project, slot_name, slot_index)
-            if problem is not None:
-                return problem
-        payload: dict[str, Any] = {
-            "project": project,
-            "entry": {
-                "operation": operation,
-                "status": status,
-                "summary": summary,
-                "diagnostics": diagnostics or {},
-                "timings": timings or {},
-            },
-        }
-        if lease_ref:
-            payload["lease_ref"] = lease_ref
-        if slot_name:
-            payload["slot_name"] = slot_name
-        if slot_index is not None:
-            payload["slot_index"] = slot_index
-        return client.post("/v1/test-slots/hot-swap-history", json=payload)
-
-    @mcp.tool()
-    def apply_test_slot_hot_swap(
-        project: str,
-        artifact_kind: str,
-        git_ref: str,
-        validation_target: str,
-        slot_index: int | None = None,
-        slot_name: str | None = None,
-        timeout_seconds: int | None = None,
-        base_ref: str | None = None,
-    ) -> dict[str, Any]:
-        """Build new code at a git ref and place it onto a running test slot.
-
-        End-to-end developer dev loop. Synchronous UX, asynchronous mechanism:
-        the call dispatches a glimmung-owned Kubernetes Job (clone the repo at
-        git_ref, run any project-owned fidelity classifier, run the contract's
-        build_command in the contract's builder_image, kubectl-stream the
-        artifact into the target pods, then restart and health-gate as the
-        artifact_kind requires) and then polls glimmung's durable status until
-        the swap reaches a terminal outcome — returning a structured result.
-
-        It polls rather than holding one long HTTP request open: the build can
-        take ~90s, and a long-held request previously hit a fixed ~30s client
-        timeout and surfaced "timed out" while the Job ran on to completion. The
-        build-and-swap deadline now lives on the Job (timeout_seconds, clamped
-        server-side to [1, 600]); this wrapper polls up to that budget and, if it
-        is still running when the budget elapses, returns the running handle —
-        the gated finalizer still records the terminal outcome durably.
-
-        The previous manual workflow (per the /test agent skill) was a dance of
-        `kubectl cp` + `kubectl exec` + `kill -HUP 1`. This tool replaces all of
-        that, including for backend; the dev's only action is the call. Session
-        pods run read-only, so this gated path is the only way to mutate a slot.
-
-        Args:
-            project: Glimmung project name (e.g., "tank-operator").
-            artifact_kind: Which contract sub-block applies. Supported by this
-                endpoint: "static", "backend", "agent_runner", "codex_runner",
-                "antigravity_runner". "static" builds the contract's static
-                bundle (e.g. a frontend) and streams it into the slot's app
-                pods. "backend" builds the project binary, streams it onto the
-                supervisor's hot-artifact file in the slot's app pods, SIGHUPs
-                PID 1, then polls the contract's health_path inside each pod to
-                confirm the re-exec serves (a binary that never goes healthy
-                fails the swap). The runner kinds stream a built directory into
-                the session pods and SIGHUP their supervisor. All kinds are the
-                CI-gated replacement for manual kubectl cp — there is no
-                client-side CLI path (session pods run read-only).
-            git_ref: Branch or tag to clone. Pushed beforehand.
-            validation_target: What the hot-swap result is meant to prove.
-                Use "existing_session" for already-running target pods,
-                "new_session" when you will create a fresh session after the
-                change, or "full_runtime" for rollout-equivalent evidence.
-                Projects with fidelity_classifier enabled reject omitted or
-                incompatible targets.
-            slot_index or slot_name: Identifies the active test-slot lease.
-                Exactly one of the two should be set.
-            timeout_seconds: Build-and-swap deadline, enforced on the Kubernetes
-                Job and used as this wrapper's poll budget. Clamped to [1, 600].
-                Default 120 (covers 30-90s typical build-and-swap + buffer for
-                cold image pulls).
-            base_ref: Optional diff base for the project's fidelity classifier.
-                When omitted, glimmung uses the repository's default branch. The
-                classifier's changed-file set is computed as base_ref...git_ref;
-                glimmung resolves it server-side because the build Job's shallow
-                checkout cannot.
-
-        Returns a structured result:
-            {"lease": "...", "job_name": "apply-hot-swap-...",
-             "status": "persisted" | "build_failed" | "swap_failed" | "timeout"
-               | "running",
-             "history_entry": {"status": ..., "summary": ..., "diagnostics":
-               {"build_logs_tail": ..., "swap_logs_tail": ..., ...}, "timings":
-               {...}}, "apply": {"outcome": ..., ...}, "dispatch": {...}}
-        When the poll budget elapses before the Job finishes, status is
-        "running" and a "note" explains how to re-query.
-
-        Hot-swap history is recorded on every outcome — durable state lives in
-        the lease, not in the response. A caller that disconnects can re-query
-        GET /v1/test-slots/apply-hot-swap/{project}/{job} or the lease history.
-
-        See docs/test-slot-hot-swap.md in romaine-life/glimmung for the workflow
-        contract and the contract shape projects need to declare.
-        """
-        problem = _active_hot_swap_lease_problem(client, project, slot_name, slot_index)
-        if problem is not None:
-            return problem
-
-        payload: dict[str, Any] = {
-            "project": project,
-            "artifact_kind": artifact_kind,
-            "git_ref": git_ref,
-            "validation_target": validation_target,
-        }
-        if slot_name:
-            payload["slot_name"] = slot_name
-        if slot_index is not None:
-            payload["slot_index"] = slot_index
-        if timeout_seconds is not None:
-            payload["timeout_seconds"] = timeout_seconds
-        if base_ref:
-            payload["base_ref"] = base_ref
-
-        # Dispatch is fast (Job submission); the build runs async on the cluster.
-        dispatch = client.post(
-            "/v1/test-slots/apply-hot-swap",
-            json=payload,
-            timeout=_HOT_SWAP_DISPATCH_TIMEOUT_SECONDS,
-        )
-        apply_block = dispatch.get("apply") or {}
-        job_name = (apply_block.get("job_name") or "").strip()
-        status = (apply_block.get("outcome") or "").strip()
-        lease = dispatch.get("lease") or ""
-        initial_entry = dispatch.get("history_entry")
-
-        # Dispatch failed before a Job existed (nothing to finalize), or there is
-        # no handle to poll — surface what we have without polling.
-        if status and status in _HOT_SWAP_TERMINAL_STATUSES:
-            return _hot_swap_result(lease, job_name, status, initial_entry, dispatch)
-        if not job_name:
-            return _hot_swap_result(
-                lease,
-                job_name,
-                status or "running",
-                initial_entry,
-                dispatch,
-                note="dispatch returned no job handle; re-query the lease hot-swap history",
-            )
-
-        return _poll_hot_swap_to_terminal(
-            client, project, job_name, lease, dispatch, initial_entry, timeout_seconds
-        )
-
-    @mcp.tool()
     def deploy_image_to_test_slot(
         project: str,
         git_ref: str,
@@ -1052,11 +751,8 @@ def register_tools(
     ) -> dict[str, Any]:
         """Deploy the CI-built image for a verified commit onto a running test slot.
 
-        The successor to apply_test_slot_hot_swap: instead of building an artifact
-        and streaming it in, it redeploys the slot to the exact image CI already
-        built for git_ref — correct by construction (the slot runs what ships),
-        with the agent out of the cluster entirely. No artifact_kind to pick, no
-        fidelity classifier, no kubectl.
+        Redeploy the slot to the exact image CI already built for git_ref. The
+        slot runs what ships, with the agent out of the cluster entirely.
 
         Synchronous UX, asynchronous mechanism: the call resolves git_ref to its
         commit SHA, dispatches a glimmung-owned reconcile of the slot's chart at
@@ -1091,7 +787,7 @@ def register_tools(
 
         See docs/test-slot-deploy-plan.md in romaine-life/glimmung for the design.
         """
-        problem = _active_hot_swap_lease_problem(client, project, slot_name, slot_index)
+        problem = _active_test_slot_lease_problem(client, project, slot_name, slot_index)
         if problem is not None:
             return problem
 
@@ -1104,7 +800,7 @@ def register_tools(
         dispatch = client.post(
             "/v1/test-slots/deploy-image",
             json=payload,
-            timeout=_HOT_SWAP_DISPATCH_TIMEOUT_SECONDS,
+            timeout=_SLOT_OP_DISPATCH_TIMEOUT_SECONDS,
         )
         job = (dispatch.get("job") or "").strip()
         status = (dispatch.get("status") or "").strip()
