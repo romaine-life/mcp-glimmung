@@ -1732,14 +1732,21 @@ def register_tools(
 
         `supplied_phase_outputs` is a list of objects shaped like
         `{"phase": "llm-work", "phase_outputs": {"branch_name": "..."}}`.
-        Earlier phases render as supplied, not passed.
+        For recovery of already-validated evidence, a verification phase may
+        instead include a typed `verification` block such as
+        `{"phase": "llm-verify", "verification": {"status": "pass",
+        "reasons": ["..."], "evidence_refs": ["runs/.../proof.png"]}}`.
+        Non-verification phases render as supplied; typed passing
+        verification phases render as carry-forward successes.
 
         `copy_phase_outputs_from` optionally asks Glimmung to copy selected
         outputs from a prior run on the same issue before applying
         `supplied_phase_outputs`. Shape:
         `{"run": "17.1", "phases": {"llm-verify": ["verification"]}}`.
         Copied phases must be before `start_at_phase`; explicit supplied
-        outputs may add missing keys but cannot conflict with copied keys."""
+        outputs may add missing keys but cannot conflict with copied keys.
+        Copying a legacy output named `verification` does not promote it into
+        the typed verification contract."""
         payload: dict[str, Any] = {
             "project": project,
             "issue_number": issue_number,

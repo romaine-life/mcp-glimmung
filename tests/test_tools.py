@@ -664,6 +664,95 @@ def test_synthetic_dispatch_run_posts_copy_phase_outputs_from() -> None:
     )
 
 
+def test_synthetic_dispatch_run_posts_typed_verification_evidence() -> None:
+    tools, client = _registered_tools()
+
+    tools["synthetic_dispatch_run"](
+        issue_number=148,
+        project="spirelens",
+        workflow="default",
+        start_at_phase="review",
+        supplied_phase_outputs=[
+            {
+                "phase": "llm-work",
+                "phase_outputs": {
+                    "branch_name": "glimmung/16df5e51-0315-40f7-b82d-c8576342e097",
+                    "test_plan": "{}",
+                },
+            },
+            {
+                "phase": "llm-verify",
+                "verification": {
+                    "status": "pass",
+                    "reasons": ["tooltip showed Energy generated 1"],
+                    "evidence_refs": [
+                        "runs/spirelens/16df5e51-0315-40f7-b82d-c8576342e097/screenshots/issue148-happy-flower-tooltip.png"
+                    ],
+                    "evidence": [
+                        {
+                            "kind": "screenshot",
+                            "ref": "runs/spirelens/16df5e51-0315-40f7-b82d-c8576342e097/screenshots/issue148-happy-flower-tooltip.png",
+                            "label": "Happy Flower tooltip",
+                        }
+                    ],
+                },
+            },
+            {
+                "phase": "cleanup_early",
+                "phase_outputs": {},
+            },
+        ],
+        slot_lease_ref="lease-123",
+        reason="retry review with recovered verifier evidence",
+    )
+
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/runs/synthetic-dispatch",
+        None,
+        {
+            "project": "spirelens",
+            "issue_number": 148,
+            "workflow": "default",
+            "start_at_phase": "review",
+            "supplied_phase_outputs": [
+                {
+                    "phase": "llm-work",
+                    "phase_outputs": {
+                        "branch_name": "glimmung/16df5e51-0315-40f7-b82d-c8576342e097",
+                        "test_plan": "{}",
+                    },
+                },
+                {
+                    "phase": "llm-verify",
+                    "verification": {
+                        "status": "pass",
+                        "reasons": ["tooltip showed Energy generated 1"],
+                        "evidence_refs": [
+                            "runs/spirelens/16df5e51-0315-40f7-b82d-c8576342e097/screenshots/issue148-happy-flower-tooltip.png"
+                        ],
+                        "evidence": [
+                            {
+                                "kind": "screenshot",
+                                "ref": "runs/spirelens/16df5e51-0315-40f7-b82d-c8576342e097/screenshots/issue148-happy-flower-tooltip.png",
+                                "label": "Happy Flower tooltip",
+                            }
+                        ],
+                    },
+                },
+                {
+                    "phase": "cleanup_early",
+                    "phase_outputs": {},
+                },
+            ],
+            "execution_context": {
+                "slot_lease_ref": "lease-123",
+            },
+            "reason": "retry review with recovered verifier evidence",
+        },
+    )
+
+
 def test_delete_workflow_calls_delete_endpoint() -> None:
     tools, client = _registered_tools()
 
