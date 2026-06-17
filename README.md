@@ -66,6 +66,35 @@ Copied phases must be before `start_at_phase`. Explicit
 `supplied_phase_outputs` may add missing keys but may not conflict with copied
 keys.
 
+For verifier recovery, prefer a typed `verification` block on the supplied
+verification phase instead of a legacy `phase_outputs.verification` JSON string:
+
+```json
+{
+  "phase": "llm-verify",
+  "verification": {
+    "status": "pass",
+    "reasons": ["tooltip showed Energy generated 1"],
+    "evidence_refs": [
+      "runs/spirelens/<run_id>/screenshots/issue148-happy-flower-tooltip.png"
+    ],
+    "evidence": [
+      {
+        "kind": "screenshot",
+        "ref": "runs/spirelens/<run_id>/screenshots/issue148-happy-flower-tooltip.png",
+        "label": "Happy Flower tooltip"
+      }
+    ]
+  }
+}
+```
+
+Glimmung accepts typed supplied verification only for verification phases before
+`start_at_phase`, and only with `status: "pass"` because synthetic supplied
+attempts are carry-forward advances. Copying a legacy output named
+`verification` remains a copied phase output and is not promoted into typed
+verification.
+
 ## Authenticated Tank Browser Inspections
 
 `inspect_browser_url` supports `tank_auth=True` for Tank UI pages. The tool
