@@ -12,28 +12,26 @@ Images are SHA-tagged from `main`; `.github/workflows/build.yml` pushes the imag
 
 ## Test-Slot Tool Contract
 
-`checkout_test_slot` is the MCP wrapper for Glimmung's
-`POST /v1/test-slots/checkout` API. Checkout is allocator-owned: callers pass
-the project and Tank session identity, and Glimmung returns the assigned slot.
+Test-slot **provisioning is deterministic and server-side**: Tank's
+`POST /api/sessions/{id}/test-workflow/start` button/endpoint validates
+readiness and drives the `POST /v1/test-slots/checkout` +
+`POST /v1/test-slots/deploy-image` Glimmung HTTP APIs from inside Tank's
+backend. Those checkout/deploy HTTP endpoints stay; only the agent-facing
+`checkout_test_slot` / `deploy_image_to_test_slot` MCP tool wrappers were
+retired (the deterministic Test button replaces them for every project).
+`tests/test_retired_test_slot_mcp_tools.py` guards against their reintroduction.
+
+The session-facing MCP surface that remains is lifecycle/observability only:
 `extend_test_slot_lease` wraps `POST /v1/test-slots/extend`; it requires the
 Tank session identity so a session can renew its own active checkout without
 returning and tearing down the slot namespace.
+`return_test_slot` owns lease-scoped runtime cleanup.
 `repair_test_slot` wraps
 `POST /v1/projects/{project}/test-environments/{slot_name}/repair` for
 admin revalidation of one configured, unleased slot. It does not change queue
-size, choose a slot, or activate hot runtime.
-
-The checkout tool must not expose or forward caller-owned slot selection or
-cleanup fields such as `slot_index`, `mode`, or `phase_inputs`. Those fields
-are rejected by the Glimmung API. Queue size changes own destructive capacity
-changes, and `return_test_slot` owns lease-scoped runtime cleanup.
-Repair is a preliminary-capacity revalidation path; it is not a cleanup or
-reset path for active leases.
-
-Checkout may return while activation is still running. When the response has
-`state: "activating"` and `usable: false`, callers should poll the returned
-`status_url` or `get_state` until the slot is `active` and `usable` before
-using the environment.
+size, choose a slot, or activate hot runtime — it is a preliminary-capacity
+revalidation path, not a cleanup or reset path for active leases.
+`set_test_environment_count` scales a project's reserved warm-slot capacity.
 
 `list_leases` separates prepared lifecycle capacity from checkout admission.
 `prepared_test_slots` are durable slot rows with lifecycle state `available`;

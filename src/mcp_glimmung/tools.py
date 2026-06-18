@@ -240,188 +240,6 @@ def _dashboard_path(value: str) -> str:
     return path
 
 
-def _as_positive_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int) and value > 0:
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = int(value.strip())
-        except ValueError:
-            return None
-        if parsed > 0:
-            return parsed
-    return None
-
-
-def _lease_metadata(lease: dict[str, Any]) -> dict[str, Any]:
-    metadata = lease.get("metadata")
-    return metadata if isinstance(metadata, dict) else {}
-
-
-def _lease_slot_name(lease: dict[str, Any]) -> str | None:
-    metadata = _lease_metadata(lease)
-    value = (
-        lease.get("slot_name")
-        or lease.get("runner_slot_name")
-        or metadata.get("slot_name")
-        or metadata.get("runner_slot_name")
-    )
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
-def _lease_slot_index(lease: dict[str, Any]) -> int | None:
-    metadata = _lease_metadata(lease)
-    for value in (
-        lease.get("slot_index"),
-        lease.get("runner_slot_index"),
-        metadata.get("slot_index"),
-        metadata.get("runner_slot_index"),
-    ):
-        parsed = _as_positive_int(value)
-        if parsed is not None:
-            return parsed
-    return None
-
-
-_SLOT_OP_POLL_INTERVAL_SECONDS = 3.0
-_SLOT_OP_DISPATCH_TIMEOUT_SECONDS = 60.0
-_SLOT_OP_POLL_REQUEST_TIMEOUT_SECONDS = 20.0
-_SLOT_OP_POLL_MARGIN_SECONDS = 30.0
-_SLOT_OP_DEFAULT_TIMEOUT_SECONDS = 120
-_DEPLOY_TERMINAL_STATUSES = {"deployed", "deploy_failed"}
-
-
-def _deploy_result(
-    lease: str,
-    job: str,
-    status: str,
-    history_entry: dict[str, Any] | None,
-    dispatch: dict[str, Any],
-    note: str | None = None,
-) -> dict[str, Any]:
-    """Shape the deploy-image-to-slot dispatch + poll outcome into one structured result."""
-    entry = history_entry or {}
-    diagnostics = entry.get("diagnostics") or {}
-    result: dict[str, Any] = {
-        "lease": lease,
-        "job_name": job,
-        "status": status,
-        "history_entry": entry,
-        "deploy": {
-            "outcome": status,
-            "git_ref": diagnostics.get("git_ref", ""),
-            "sha": diagnostics.get("sha", ""),
-            "image": diagnostics.get("image", ""),
-            "error": diagnostics.get("error", ""),
-        },
-        "dispatch": dispatch,
-    }
-    if note:
-        result["note"] = note
-    return result
-
-
-def _poll_deploy_to_terminal(
-    client: GlimmungClient,
-    project: str,
-    job: str,
-    lease: str,
-    dispatch: dict[str, Any],
-    initial_entry: dict[str, Any] | None,
-    timeout_seconds: int | None,
-) -> dict[str, Any]:
-    """Poll the durable status endpoint until the deploy is terminal or the budget elapses."""
-    budget = float(
-        timeout_seconds if timeout_seconds and timeout_seconds > 0 else _SLOT_OP_DEFAULT_TIMEOUT_SECONDS
-    ) + _SLOT_OP_POLL_MARGIN_SECONDS
-    deadline = time.monotonic() + budget
-    last_entry = initial_entry
-    status = "running"
-    path = f"/v1/test-slots/jobs/{project}/{job}"
-    while time.monotonic() < deadline:
-        time.sleep(_SLOT_OP_POLL_INTERVAL_SECONDS)
-        try:
-            poll = client.get(path, timeout=_SLOT_OP_POLL_REQUEST_TIMEOUT_SECONDS)
-        except httpx.HTTPError:
-            continue
-        status = poll.get("status") or status
-        last_entry = poll.get("history_entry") or last_entry
-        lease = poll.get("lease") or lease
-        if status in _DEPLOY_TERMINAL_STATUSES:
-            return _deploy_result(lease, job, status, last_entry, dispatch)
-    return _deploy_result(
-        lease,
-        job,
-        status or "running",
-        last_entry,
-        dispatch,
-        note=(
-            f"deploy still running after ~{int(budget)}s; the outcome is recorded "
-            f"durably — re-query GET /v1/test-slots/jobs/{project}/{job} "
-            f"or the lease history for the final result"
-        ),
-    )
-
-
-def _slot_selector_problem(
-    project: str,
-    slot_name: str | None,
-    slot_index: int | None,
-) -> dict[str, Any] | None:
-    has_name = isinstance(slot_name, str) and bool(slot_name.strip())
-    has_index = slot_index is not None
-    if has_name == has_index:
-        return {
-            "state": "slot_selector_invalid",
-            "project": project,
-            "slot_name": slot_name,
-            "slot_index": slot_index,
-            "detail": "pass exactly one of slot_name or slot_index",
-        }
-    return None
-
-
-def _active_test_slot_lease_problem(
-    client: GlimmungClient,
-    project: str,
-    slot_name: str | None,
-    slot_index: int | None,
-) -> dict[str, Any] | None:
-    selector_problem = _slot_selector_problem(project, slot_name, slot_index)
-    if selector_problem is not None:
-        return selector_problem
-
-    state = client.get("/v1/state")
-    active = state.get("active_leases") if isinstance(state, dict) else []
-    for lease in active or []:
-        if not isinstance(lease, dict):
-            continue
-        if lease.get("project") != project:
-            continue
-        metadata = _lease_metadata(lease)
-        if metadata.get("test_slot_checkout") is False:
-            continue
-        if slot_name is not None and _lease_slot_name(lease) == slot_name:
-            return None
-        if slot_index is not None and _lease_slot_index(lease) == slot_index:
-            return None
-
-    return {
-        "state": "no_active_test_slot_lease",
-        "project": project,
-        "slot_name": slot_name,
-        "slot_index": slot_index,
-        "detail": (
-            "no active test-slot lease matches this project and slot; "
-            "call checkout_test_slot before deploying an image"
-        ),
-    }
-
-
 def _resolve_slot_playwright_ws(client: GlimmungClient, tank_session_id: str) -> str:
     """Find the active test-slot lease for a Tank session and return its
     slot-playwright Service ws endpoint."""
@@ -438,8 +256,9 @@ def _resolve_slot_playwright_ws_and_project(
     Errors if the session does not currently hold an active test-slot lease,
     or if the lease's slot does not yet expose a playwright endpoint
     (slot still activating, or the cluster is not running playwright-enabled
-    slots). Sessions must `checkout_test_slot` before calling
-    `inspect_browser_url`.
+    slots). A test slot must already be provisioned for the session (the Tank
+    Test button/endpoint provisions one deterministically server-side) before
+    calling `inspect_browser_url`.
     """
     if not tank_session_id:
         raise ValueError("tank_session_id required")
@@ -454,7 +273,7 @@ def _resolve_slot_playwright_ws_and_project(
         #   2. lease["metadata"]["requester"]["metadata"]["tank_session_id"]
         #   3. lease["requester"]["metadata"]["tank_session_id"]
         # (2) and (3) are what the runner-k8s test-slot allocator writes
-        # today — (1) was never populated by checkout_test_slot, so the
+        # today — (1) was never populated by the slot checkout path, so the
         # lookup found nothing and every inspect_browser_url call landed
         # on the "no active test-slot lease" error path. Try all three
         # in deterministic order; first non-empty match wins.
@@ -497,7 +316,8 @@ def _resolve_slot_playwright_ws_and_project(
         )
     raise RuntimeError(
         f"no active test-slot lease found for tank session {tank_session_id!r}; "
-        "call checkout_test_slot before inspect_browser_url"
+        "provision a test slot (via the Tank Test button/endpoint) before "
+        "inspect_browser_url"
     )
 
 
@@ -742,87 +562,6 @@ def register_tools(
         )
 
     @mcp.tool()
-    def deploy_image_to_test_slot(
-        project: str,
-        git_ref: str,
-        slot_index: int | None = None,
-        slot_name: str | None = None,
-        timeout_seconds: int | None = None,
-    ) -> dict[str, Any]:
-        """Deploy the CI-built image for a verified commit onto a running test slot.
-
-        Redeploy the slot to the exact image CI already built for git_ref. The
-        slot runs what ships, with the agent out of the cluster entirely.
-
-        Synchronous UX, asynchronous mechanism: the call resolves git_ref to its
-        commit SHA, dispatches a glimmung-owned reconcile of the slot's chart at
-        the verified ref with the CI image pinned, then polls the durable status
-        until the deploy is terminal (deployed | deploy_failed) and the slot is
-        verified — from the apiserver — to actually be running that image, or
-        returns the running handle if the poll budget elapses (the outcome is
-        still recorded durably).
-
-        The caller supplies only a project, a slot, and a pushed git_ref. The
-        legitimacy gate (published + CI-green + mergeable + current-with-main) is
-        enforced upstream, and deploys only ever operate on a git ref, so unpushed
-        working-tree code can never reach a slot. CI must have built and pushed the
-        image for that commit (tagged by the commit SHA).
-
-        Args:
-            project: Glimmung project name (e.g., "tank-operator").
-            git_ref: Branch, tag, or SHA to deploy. Pushed beforehand.
-            slot_index or slot_name: Identifies the active test-slot lease.
-                Exactly one of the two should be set.
-            timeout_seconds: Deploy deadline used as this wrapper's poll budget.
-                Default 120.
-
-        Returns a structured result:
-            {"lease": "...", "job_name": "deploy-...",
-             "status": "deployed" | "deploy_failed" | "running",
-             "history_entry": {...},
-             "deploy": {"outcome": ..., "git_ref": ..., "sha": ..., "image": ...},
-             "dispatch": {...}}
-        When the budget elapses before the deploy finishes, status is "running"
-        and a "note" explains how to re-query.
-
-        See docs/test-slot-deploy-plan.md in romaine-life/glimmung for the design.
-        """
-        problem = _active_test_slot_lease_problem(client, project, slot_name, slot_index)
-        if problem is not None:
-            return problem
-
-        payload: dict[str, Any] = {"project": project, "git_ref": git_ref}
-        if slot_name:
-            payload["slot_name"] = slot_name
-        if slot_index is not None:
-            payload["slot_index"] = slot_index
-
-        dispatch = client.post(
-            "/v1/test-slots/deploy-image",
-            json=payload,
-            timeout=_SLOT_OP_DISPATCH_TIMEOUT_SECONDS,
-        )
-        job = (dispatch.get("job") or "").strip()
-        status = (dispatch.get("status") or "").strip()
-        lease = dispatch.get("lease") or ""
-        initial_entry = dispatch.get("history_entry")
-
-        if status and status in _DEPLOY_TERMINAL_STATUSES:
-            return _deploy_result(lease, job, status, initial_entry, dispatch)
-        if not job:
-            return _deploy_result(
-                lease,
-                job,
-                status or "running",
-                initial_entry,
-                dispatch,
-                note="dispatch returned no deploy handle; re-query the lease history",
-            )
-        return _poll_deploy_to_terminal(
-            client, project, job, lease, dispatch, initial_entry, timeout_seconds
-        )
-
-    @mcp.tool()
     def list_workflows(
         project: str | None = None,
         name: str | None = None,
@@ -929,8 +668,9 @@ def register_tools(
         """Inspect a live URL with Chromium and return a summary plus
         durable artifact URLs.
 
-        Runs inside the active test slot's `slot-playwright` pod, so callers
-        must hold a checked-out test slot via `checkout_test_slot` first.
+        Runs inside the active test slot's `slot-playwright` pod, so the
+        session must already hold a provisioned test slot (the Tank Test
+        button/endpoint provisions one deterministically server-side) first.
         The slot's Playwright drives the browser; the MCP host does not. The
         Tank session lease is derived from trusted caller context, not from a
         model-supplied argument.
@@ -1768,84 +1508,6 @@ def register_tools(
         return _hide_lease_id(client.post("/v1/runs/synthetic-dispatch", json=payload))
 
     @mcp.tool()
-    def checkout_test_slot(
-        project: str,
-        workflow: str | None = None,
-        ttl_seconds: int | None = None,
-    ) -> dict[str, Any]:
-        """Reserve a Glimmung native app test slot.
-
-        Use this when you need an ad-hoc app slot. Glimmung chooses an
-        available slot, records a runner lease, and starts lease-scoped runtime
-        activation. Callers cannot select a slot or request clean-slate
-        cleanup through checkout; queue-size changes and returns own
-        destructive cleanup.
-
-        Checkout may return while activation is still in progress. In that
-        case the response includes `state: "activating"`, `usable: false`, the
-        assigned slot name/index, and `status_url`; poll that status URL or
-        `get_state` until the slot is `active` and `usable` before relying on
-        the environment.
-
-        Tank's session identity is derived from trusted caller context so the
-        UI can mark the requesting session with the leased environment number
-        and URL."""
-        normalized_tank_session_id = require_tank_session_id()
-        session_scope = current_tank_session_scope() or "default"
-        session_ref = f"tank-operator/session/{normalized_tank_session_id}"
-        if session_scope != "default":
-            session_ref = (
-                f"tank-operator/{session_scope}/session/{normalized_tank_session_id}"
-            )
-        requester = {
-            "consumer": "tank-operator",
-            "kind": "tank_session",
-            "ref": session_ref,
-            "label": normalized_tank_session_id,
-            "metadata": {
-                "tank_session_id": normalized_tank_session_id,
-                "session_scope": session_scope,
-            },
-        }
-        payload: dict[str, Any] = {
-            "project": project,
-            "requester": requester,
-            "tank_session_id": normalized_tank_session_id,
-        }
-        if workflow is not None:
-            payload["workflow"] = workflow
-        if ttl_seconds is not None:
-            payload["ttl_seconds"] = ttl_seconds
-        result = client.post("/v1/test-slots/checkout", json=payload)
-        tank_state = None
-        if (
-            tank_client is not None
-            and result.get("state") in {"activating", "active", "claimed"}
-            and result.get("slot_index") is not None
-        ):
-            slot_url = result.get("url")
-            if not isinstance(slot_url, str) or not slot_url:
-                tank_state = {"error": "checkout response did not include a test slot url"}
-            else:
-                try:
-                    tank_state = tank_client.set_test_environment(
-                        session_id=normalized_tank_session_id,
-                        active=True,
-                        slot_index=result.get("slot_index"),
-                        url=slot_url,
-                    )
-                except (httpx.HTTPError, RuntimeError, ValueError) as exc:
-                    tank_state = {"error": str(exc)}
-        sanitized = _hide_lease_id(result)
-        if tank_state is not None:
-            if "error" in tank_state:
-                sanitized["tank_test_state_error"] = tank_state["error"]
-            else:
-                sanitized["tank_test_state"] = tank_state.get("test_state")
-                sanitized["tank_session_url"] = tank_state.get("url")
-        return sanitized
-
-    @mcp.tool()
     def return_test_slot(
         project: str,
         slot_index: int | None = None,
@@ -1925,7 +1587,7 @@ def register_tools(
         slot.
 
         Returns the updated project record. The new capacity becomes
-        available to `checkout_test_slot` after provisioning settles."""
+        available for test-slot checkout after provisioning settles."""
         if not isinstance(count, int) or count < 0 or count > 50:
             raise ValueError("count must be an integer between 0 and 50")
         log.info(
