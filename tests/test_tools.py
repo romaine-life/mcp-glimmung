@@ -664,6 +664,78 @@ def test_synthetic_dispatch_run_posts_copy_phase_outputs_from() -> None:
     )
 
 
+def test_synthetic_dispatch_run_forwards_inputs() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["synthetic_dispatch_run"](
+        issue_number=168,
+        project="ambience",
+        workflow="default",
+        start_at_phase="llm-verify",
+        supplied_phase_outputs=[
+            {
+                "phase": "llm-work",
+                "phase_outputs": {
+                    "branch_name": "glimmung/issue-168-run-11",
+                    "test_plan": "{}",
+                },
+            }
+        ],
+        slot_lease_ref="lease-123",
+        reason="break-glass retry verification",
+        inputs={"git_ref": "codex/lifecycle-observe"},
+    )
+
+    assert result["path"] == "/v1/runs/synthetic-dispatch"
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/runs/synthetic-dispatch",
+        None,
+        {
+            "project": "ambience",
+            "issue_number": 168,
+            "workflow": "default",
+            "start_at_phase": "llm-verify",
+            "supplied_phase_outputs": [
+                {
+                    "phase": "llm-work",
+                    "phase_outputs": {
+                        "branch_name": "glimmung/issue-168-run-11",
+                        "test_plan": "{}",
+                    },
+                }
+            ],
+            "execution_context": {
+                "slot_lease_ref": "lease-123",
+            },
+            "reason": "break-glass retry verification",
+            "inputs": {"git_ref": "codex/lifecycle-observe"},
+        },
+    )
+
+
+def test_synthetic_dispatch_run_omits_inputs_when_absent() -> None:
+    tools, client = _registered_tools()
+
+    tools["synthetic_dispatch_run"](
+        issue_number=168,
+        project="ambience",
+        workflow="default",
+        start_at_phase="llm-verify",
+        supplied_phase_outputs=[
+            {
+                "phase": "llm-work",
+                "phase_outputs": {"branch_name": "glimmung/issue-168-run-11"},
+            }
+        ],
+        slot_lease_ref="lease-123",
+        reason="break-glass retry verification",
+    )
+
+    _, _, _, payload = client.calls[-1]
+    assert "inputs" not in payload
+
+
 def test_synthetic_dispatch_run_posts_typed_verification_evidence() -> None:
     tools, client = _registered_tools()
 
