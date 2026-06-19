@@ -615,6 +615,99 @@ def test_synthetic_dispatch_run_posts_strict_payload() -> None:
     )
 
 
+def test_synthetic_dispatch_run_omits_slot_lease_when_slotless() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["synthetic_dispatch_run"](
+        issue_number=147,
+        project="spirelens",
+        workflow="default",
+        start_at_phase="review",
+        supplied_phase_outputs=[
+            {
+                "phase": "llm-verify",
+                "verification": {
+                    "status": "pass",
+                    "evidence_refs": [
+                        "runs/spirelens/run-3/screenshots/tooltip.png"
+                    ],
+                },
+            }
+        ],
+        reason="slotless evidence replay into review",
+    )
+
+    assert result["path"] == "/v1/runs/synthetic-dispatch"
+    assert client.calls[-1] == (
+        "POST",
+        "/v1/runs/synthetic-dispatch",
+        None,
+        {
+            "project": "spirelens",
+            "issue_number": 147,
+            "workflow": "default",
+            "start_at_phase": "review",
+            "supplied_phase_outputs": [
+                {
+                    "phase": "llm-verify",
+                    "verification": {
+                        "status": "pass",
+                        "evidence_refs": [
+                            "runs/spirelens/run-3/screenshots/tooltip.png"
+                        ],
+                    },
+                }
+            ],
+            "execution_context": {},
+            "reason": "slotless evidence replay into review",
+        },
+    )
+
+
+def test_synthetic_dispatch_run_forwards_skip_steps() -> None:
+    tools, client = _registered_tools()
+
+    result = tools["synthetic_dispatch_run"](
+        issue_number=147,
+        project="spirelens",
+        workflow="default",
+        start_at_phase="llm-verify",
+        supplied_phase_outputs=[
+            {
+                "phase": "llm-verify",
+                "verification": {
+                    "status": "pass",
+                    "evidence_refs": [
+                        "runs/spirelens/run-3/screenshots/tooltip.png"
+                    ],
+                },
+            }
+        ],
+        slot_lease_ref="lease-123",
+        skip_steps=["run-verification"],
+        reason="replay the guard without re-running produce",
+    )
+
+    assert result["path"] == "/v1/runs/synthetic-dispatch"
+    body = client.calls[-1][3]
+    assert body["skip_steps"] == ["run-verification"]
+    assert body["execution_context"] == {"slot_lease_ref": "lease-123"}
+
+
+def test_synthetic_dispatch_run_omits_skip_steps_when_absent() -> None:
+    tools, client = _registered_tools()
+
+    tools["synthetic_dispatch_run"](
+        issue_number=147,
+        project="spirelens",
+        start_at_phase="review",
+        supplied_phase_outputs=[],
+        reason="no skip",
+    )
+
+    assert "skip_steps" not in client.calls[-1][3]
+
+
 def test_synthetic_dispatch_run_posts_copy_phase_outputs_from() -> None:
     tools, client = _registered_tools()
 
