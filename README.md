@@ -93,6 +93,12 @@ attempts are carry-forward advances. Copying a legacy output named
 `verification` remains a copied phase output and is not promoted into typed
 verification.
 
+Like `dispatch_run`, `synthetic_dispatch_run` accepts an optional `inputs`
+string map forwarded to the synthetic-dispatch endpoint (the same shared
+`normalizeRunInputs` -> `resolveDispatchRunInputs` path the ordinary dispatch
+uses), so a session can supply workflow inputs such as a runner checkout
+`git_ref`. When `inputs` is omitted the payload is unchanged.
+
 ## Authenticated Tank Browser Inspections
 
 `inspect_browser_url` supports `tank_auth=True` for Tank UI pages. The tool

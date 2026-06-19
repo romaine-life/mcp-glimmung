@@ -1459,6 +1459,7 @@ def register_tools(
         namespace: str | None = None,
         validation_url: str | None = None,
         trigger_source: dict[str, Any] | None = None,
+        inputs: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Create a break-glass synthetic Glimmung run from caller-supplied facts.
 
@@ -1486,7 +1487,10 @@ def register_tools(
         Copied phases must be before `start_at_phase`; explicit supplied
         outputs may add missing keys but cannot conflict with copied keys.
         Copying a legacy output named `verification` does not promote it into
-        the typed verification contract."""
+        the typed verification contract.
+
+        `inputs` is an optional string map passed to workflow templates such as
+        runner checkout refs (e.g. `git_ref`)."""
         payload: dict[str, Any] = {
             "project": project,
             "issue_number": issue_number,
@@ -1505,6 +1509,8 @@ def register_tools(
             payload["execution_context"]["validation_url"] = validation_url
         if trigger_source is not None:
             payload["trigger_source"] = trigger_source
+        if inputs is not None:
+            payload["inputs"] = inputs
         return _hide_lease_id(client.post("/v1/runs/synthetic-dispatch", json=payload))
 
     @mcp.tool()
