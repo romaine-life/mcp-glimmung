@@ -1452,24 +1452,28 @@ def register_tools(
         project: str,
         start_at_phase: str,
         supplied_phase_outputs: list[dict[str, Any]],
-        slot_lease_ref: str,
         reason: str,
+        slot_lease_ref: str | None = None,
         workflow: str | None = None,
         copy_phase_outputs_from: dict[str, Any] | None = None,
         namespace: str | None = None,
         validation_url: str | None = None,
         trigger_source: dict[str, Any] | None = None,
         inputs: dict[str, str] | None = None,
+        skip_steps: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a break-glass synthetic Glimmung run from caller-supplied facts.
 
         This tool is intentionally strict and unhelpful. It does not fetch old
         runs unless explicitly told to copy selected phase outputs, infer
         missing outputs, provision a test slot, or decide which phases matter.
-        The caller must provide the exact `start_at_phase`, a claimed
-        `slot_lease_ref`, and every skipped phase output that the entrypoint
-        phase needs. Missing or wrong data should fail at the Glimmung API
-        boundary.
+        The caller must provide the exact `start_at_phase` and every skipped
+        phase output that the entrypoint phase needs. `slot_lease_ref` is a
+        claimed test-slot lease, required only when the run will execute an
+        environment phase (work / verification); omit it for a slotless replay
+        whose start->terminal span is review / review_gate / teardown (it
+        touches no test environment). Missing or wrong data should fail at the
+        Glimmung API boundary.
 
         `supplied_phase_outputs` is a list of objects shaped like
         `{"phase": "llm-work", "phase_outputs": {"branch_name": "..."}}`.
@@ -1490,27 +1494,42 @@ def register_tools(
         the typed verification contract.
 
         `inputs` is an optional string map passed to workflow templates such as
-        runner checkout refs (e.g. `git_ref`)."""
+        runner checkout refs (e.g. `git_ref`).
+
+        `skip_steps` names step slugs of the `start_at_phase` to skip: Glimmung
+        omits them from the runner job spec and synthesizes their skipped
+        records, while you supply what they would have produced via
+        `supplied_phase_outputs` / `inputs`. This replays a single harness step
+        (e.g. the evidence guard, or collect-evidence) against recorded inputs
+        without re-running the expensive produce step it depends on. A skipped
+        slug must be a declared step of the start phase, must not be a managed
+        primitive step (verification_finalize / pr_review / pr_merge), and at
+        least one step of its job must remain."""
+        execution_context: dict[str, Any] = {}
+        if slot_lease_ref is not None:
+            execution_context["slot_lease_ref"] = slot_lease_ref
+        if namespace is not None:
+            execution_context["namespace"] = namespace
+        if validation_url is not None:
+            execution_context["validation_url"] = validation_url
         payload: dict[str, Any] = {
             "project": project,
             "issue_number": issue_number,
             "start_at_phase": start_at_phase,
             "supplied_phase_outputs": supplied_phase_outputs,
-            "execution_context": {"slot_lease_ref": slot_lease_ref},
+            "execution_context": execution_context,
             "reason": reason,
         }
         if workflow is not None:
             payload["workflow"] = workflow
         if copy_phase_outputs_from is not None:
             payload["copy_phase_outputs_from"] = copy_phase_outputs_from
-        if namespace is not None:
-            payload["execution_context"]["namespace"] = namespace
-        if validation_url is not None:
-            payload["execution_context"]["validation_url"] = validation_url
         if trigger_source is not None:
             payload["trigger_source"] = trigger_source
         if inputs is not None:
             payload["inputs"] = inputs
+        if skip_steps is not None:
+            payload["skip_steps"] = skip_steps
         return _hide_lease_id(client.post("/v1/runs/synthetic-dispatch", json=payload))
 
     @mcp.tool()
